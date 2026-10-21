@@ -286,8 +286,9 @@ bool dnsUsesPsram() { return usePsram; }
 // ---------- custom domains, bans, pause (set from loop, read by the task) ----------
 static portMUX_TYPE listMux = portMUX_INITIALIZER_UNLOCKED;
 static const int MAX_CUSTOM = 200, MAX_BAN = 32;
-static uint64_t customH[MAX_CUSTOM]; static int nCustom = 0;
-static uint32_t bannedIp[MAX_BAN];   static int nBanned = 0;
+// volatile: written from loop(), read lock-free from the lwIP thread (see isCustom)
+static uint64_t customH[MAX_CUSTOM]; static volatile int nCustom = 0;
+static uint32_t bannedIp[MAX_BAN];   static volatile int nBanned = 0;
 static volatile bool blocking = true;
 
 void dnsSetCustom(const uint64_t* h, int n) {
@@ -300,7 +301,12 @@ void dnsSetBanned(const uint32_t* ip, int n) {
 }
 void dnsSetBlocking(bool on) { blocking = on; }
 
+// Both lists are empty on a stock device, and nameBlocked() asks about every
+// parent of every name, so the count is read first: no lock at all in the common
+// case. A plain int read can't tear, and a count that grows between the check and
+// the scan only means the brand-new entry applies from the next query on.
 static bool isCustom(uint64_t h) {
+  if (!nCustom) return false;
   bool hit = false;
   portENTER_CRITICAL(&listMux);
   for (int i = 0; i < nCustom && !hit; i++) hit = customH[i] == h;
@@ -308,6 +314,7 @@ static bool isCustom(uint64_t h) {
   return hit;
 }
 static bool isBanned(uint32_t ip) {
+  if (!nBanned) return false;
   bool hit = false;
   portENTER_CRITICAL(&listMux);
   for (int i = 0; i < nBanned && !hit; i++) hit = bannedIp[i] == ip;
