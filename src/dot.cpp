@@ -44,22 +44,27 @@ static const uint32_t BACKOFF_MS  = 30000;    // after repeated failures, stop r
 static const int      MAX_FAILS   = 3;
 static const int      QDEPTH      = 48;   // >= the DNS engine's 64 pending slots in practice
 
-struct DotReq { uint16_t slot, gen, len; uint8_t msg[512]; };
+struct DotReq { uint32_t t; uint16_t slot, gen, len; uint8_t msg[512]; };   // t = submitted at
 static QueueHandle_t dotQ;
 
 static volatile bool up = false;
+static volatile bool linkDown = false;        // known-broken: send over UDP instead of waiting
 static volatile uint32_t lastClientMs = 0;
 static volatile uint32_t stQ = 0, stR = 0, stF = 0, stHs = 0, stHsMs = 0;
 
 static inline uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 void dotNoteClient() { lastClientMs = nowMs(); }
-bool dotReady() { return up || (nowMs() - lastClientMs < WARM_MS); }   // willing to connect on demand
+// Queue for TLS while the link is up, and while it is merely idle (the task will
+// bring it back and the query goes out encrypted). Once a connect has actually
+// failed, say no: the engine then sends plaintext immediately instead of letting
+// every query wait out its 350 ms fallback timer for the length of the outage.
+bool dotReady() { return up || (!linkDown && nowMs() - lastClientMs < WARM_MS); }
 DotStats dotStats() { return { stQ, stR, stF, stHs, stHsMs, up }; }
 
 bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len) {
   if (!dotQ || len > sizeof(DotReq::msg)) return false;
-  DotReq r; r.slot = slot; r.gen = gen; r.len = len; memcpy(r.msg, msg, len);
+  DotReq r; r.t = nowMs(); r.slot = slot; r.gen = gen; r.len = len; memcpy(r.msg, msg, len);
   return xQueueSend(dotQ, &r, 0) == pdTRUE;
 }
 
@@ -96,7 +101,9 @@ static int drainReplies() {
   int got = 0;
   while (cli.connected()) {
     int want = rlen < 2 ? 2 : 2 + ((rbuf[0] << 8) | rbuf[1]);
-    if (want > (int)sizeof(rbuf)) { cli.stop(); return got; }      // desync: drop the link
+    // A frame that can't hold a DNS header means the stream is out of step (or the
+    // peer is broken); without this the parser would sit on it forever.
+    if (want > (int)sizeof(rbuf) || (rlen >= 2 && want < 2 + 12)) { cli.stop(); return got; }
     if (!cli.available()) return got;
     int n = cli.read(rbuf + rlen, want - rlen);
     if (n <= 0) return got;
@@ -123,6 +130,20 @@ static void sendKeepalive() {
   cli.write(ka, sizeof(ka));
 }
 
+// Header and body in one write so they share a TLS record (and a TCP segment).
+// Returns false only when the link broke; a query that waited out its usefulness
+// is skipped, since the engine has already answered that client over UDP.
+static bool sendQuery(DotReq& r) {
+  if (nowMs() - r.t > 1200) return true;
+  r.msg[0] = r.slot; r.msg[1] = r.gen;         // wire id = slot<<8 | gen, so a reply finds its slot
+  uint8_t frame[2 + sizeof(DotReq::msg)];
+  frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
+  memcpy(frame + 2, r.msg, r.len);
+  if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); return false; }
+  stQ++;
+  return true;
+}
+
 static void dotTask(void*) {
   uint32_t lastSend = 0, failedAt = 0;
   int fails = 0;
@@ -132,10 +153,14 @@ static void dotTask(void*) {
       if (up) { up = false; Serial.println("[dot] link closed"); }
       bool backoff = fails >= MAX_FAILS && nowMs() - failedAt < BACKOFF_MS;
       if (WiFi.status() == WL_CONNECTED && warm && !backoff) {
-        if (connectDot()) { up = true; fails = 0; lastSend = nowMs(); }
-        else { stF++; fails++; failedAt = nowMs(); Serial.printf("[dot] connect failed (%d)\n", fails); }
+        if (connectDot()) { up = true; linkDown = false; fails = 0; lastSend = nowMs(); }
+        else { stF++; fails++; failedAt = nowMs(); linkDown = true; Serial.printf("[dot] connect failed (%d)\n", fails); }
       }
-      if (!up) { xQueueReset(dotQ); vTaskDelay(pdMS_TO_TICKS(250)); continue; }
+      // Queued queries are deliberately NOT discarded here: the engine retries
+      // them over UDP after 350 ms, so the client is served either way, and
+      // anything still fresh when the link comes up goes out encrypted. Dropping
+      // the queue instead made every miss during a 30 s backoff time out.
+      if (!up) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }
     }
 
     // Drain the whole queue into the pipeline before waiting on anything: one
@@ -146,22 +171,14 @@ static void dotTask(void*) {
     DotReq r;
     bool sent = false, dead = false;
     while (!dead && xQueueReceive(dotQ, &r, 0) == pdTRUE) {
-      r.msg[0] = r.slot; r.msg[1] = r.gen;     // wire id = slot<<8 | gen, so a reply finds its slot
-      uint8_t frame[2 + sizeof(DotReq::msg)];  // one write: header and body in the same TLS record
-      frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
-      memcpy(frame + 2, r.msg, r.len);
-      if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); dead = true; break; }
-      stQ++; sent = true;
+      if (!sendQuery(r)) { dead = true; break; }
+      sent = true;
     }
     if (dead) continue;
     if (sent) lastSend = nowMs();
     else if (xQueueReceive(dotQ, &r, pdMS_TO_TICKS(nowMs() - lastSend < 2000 ? 1 : 100)) == pdTRUE) {
-      uint8_t frame[2 + sizeof(DotReq::msg)];
-      r.msg[0] = r.slot; r.msg[1] = r.gen;
-      frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
-      memcpy(frame + 2, r.msg, r.len);
-      if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); continue; }
-      stQ++; lastSend = nowMs();
+      if (!sendQuery(r)) continue;
+      lastSend = nowMs();
     }
     drainReplies();
 

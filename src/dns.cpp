@@ -45,7 +45,20 @@ static inline uint64_t unpack5(const uint8_t* b) {
 // RAM index, guarded by a mutex because the file handle is shared with the loader.
 struct Blocklist { uint8_t* data; uint32_t n; };
 static Blocklist* volatile blMem = nullptr;
+static Blocklist* retired = nullptr;           // see publish()
 static bool usePsram = false;
+
+// Swap in a new list with a single pointer store, so a lookup in the lwIP thread
+// either sees the old list or the new one, never a half-built state. The displaced
+// list is freed at the *next* swap rather than after a delay: a lookup that was
+// already walking it finishes in microseconds, and swaps are minutes apart, so
+// this needs no timing assumption to be safe.
+static void publish(Blocklist* nb) {
+  Blocklist* old = blMem;
+  blMem = nb;
+  if (retired) { heap_caps_free(retired->data); delete retired; }
+  retired = old;
+}
 
 static const int IDX = 4096, MAX_RANGE = 256;
 static File blFile;
@@ -111,10 +124,7 @@ bool dnsLoadBlocklist(const char* path) {
     f.close();
     // A text list (or truncated download) is rejected here instead of going live.
     if (got != sz || !sortedRun(d, n, &prev)) { heap_caps_free(d); return false; }
-    Blocklist* nb = new Blocklist{d, n};
-    Blocklist* old = blMem;
-    blMem = nb;
-    if (old) { vTaskDelay(pdMS_TO_TICKS(50)); heap_caps_free(old->data); delete old; }   // let any in-flight lookup finish
+    publish(new Blocklist{d, n});
     return true;
   }
   uint8_t chunk[256 * HASH_BYTES];
@@ -233,11 +243,8 @@ bool dnsTextCommit() {
   }
   uint8_t* shrunk = (uint8_t*)heap_caps_realloc(bld, (size_t)kept * HASH_BYTES, MALLOC_CAP_SPIRAM);
   if (shrunk) out = shrunk;                     // shrink is best-effort
-  Blocklist* nb = new Blocklist{out, kept};
-  Blocklist* old = blMem;
-  blMem = nb;
+  publish(new Blocklist{out, kept});
   bld = nullptr; bldN = bldCap = 0; bldLen = 0;
-  if (old) { vTaskDelay(pdMS_TO_TICKS(50)); heap_caps_free(old->data); delete old; }
   if (bldOver) Serial.println("[list] capacity reached: list truncated");
   return true;
 }
