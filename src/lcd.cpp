@@ -2,7 +2,7 @@
 // Design goals (user): no graphs, big readable numbers, near-zero CPU/DMA cost so
 // DNS performance never suffers. Full-frame push only when something changed.
 #include "lcd.h"
-#if defined(ARDUINO_ESP32S3_DEV)
+#if defined(ARDUINO_ESP32S3_DEV) && defined(LCD_ENABLE)
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold24pt7b.h>
