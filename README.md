@@ -41,6 +41,22 @@ ESP32-S3 these hashes hold **~2.7M domains** vs ~466k for strings in 8 MB of
 PSRAM. Hashes in flash beat strings in PSRAM basically everywhere; the C3 just
 makes it undeniable.
 
+### Where the time goes (ESP32-S3, measured with `tools/dnsbench.py`)
+
+| | this box | straight to Quad9 |
+|---|---|---|
+| Blocked name | **7.4 ms** | — |
+| Repeat name (answer cache) | **7.8 ms** | 70-85 ms |
+| New name (cache miss, over TLS) | 91 ms | 82 ms |
+| 32 queries at once | 0 lost | 0 lost |
+
+A blocked or cached answer costs about what a WiFi round-trip costs — the filtering
+itself is microseconds. Misses pay one upstream round-trip plus ~9 ms for TLS, and the
+DNS engine runs inside lwIP's own thread, so the dashboard, an OTA, or a blocklist
+rebuild can't stall it. Cache misses leave the box **encrypted** (DNS-over-TLS to a
+certificate-verified resolver), which is what stops an ISP from reading or rewriting
+them; plaintext UDP is only a fallback for when that link is down.
+
 ## Hardware
 
 - Any **ESP32-C3** board (tested on a C3 SuperMini), 4 MB flash, **no PSRAM needed**
@@ -122,10 +138,21 @@ just visit — see Security below.)
 The dashboard at **http://c3adblock.local** does it all:
 
 - **Blocklist** — drop a freshly built `blocklist.bin` into *Blocklist → Upload*, or set a
-  URL under *Remote auto-update* and the device pulls a prebuilt `blocklist.bin`
-  on a schedule. A fresh default list is rebuilt **every Monday** by GitHub Actions and
-  published at a stable URL, so pasting this once keeps a device current on its own:
+  URL under *Remote auto-update* and the device pulls it on a schedule. A fresh default
+  list is rebuilt **every Monday** by GitHub Actions and published at a stable URL, so
+  pasting this once keeps a device current on its own:
   `https://github.com/M-Abozaid/esp32-c3-adblock/releases/download/blocklist/blocklist.bin`
+
+  **With PSRAM** (the S3 build) the URL doesn't have to be a prebuilt `.bin` at all:
+  anything else is read as a text source in hosts or AdGuard syntax and hashed straight
+  into PSRAM as it downloads, so upstream lists work directly — nothing to prebuild and
+  nothing to host. Separate several URLs with spaces to merge them. Measured on an
+  ESP32-S3: `adblock/pro.txt` (2.4 MB of text) becomes 206,567 domains in about a minute,
+  while DNS keeps answering at a p50 of 7 ms. The live list only changes once the new one
+  has been validated, so a failed download can't leave the box unfiltered.
+  ```
+  https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.txt
+  ```
 - **Firmware** — upload `.pio/build/c3/firmware.bin` under *Firmware → OTA update*; the
   device verifies it and reboots into the new image. Or push over WiFi from the CLI:
   ```bash
