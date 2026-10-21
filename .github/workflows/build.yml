@@ -42,3 +42,7 @@ jobs:
           test "$(stat -c%s t.bin)" -eq 15   # 3 entries x 5 bytes
       - name: Unit tests
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Tools compile
+        # dnsbench.py and dnscheck.py need a live device, so CI can only check
+        # that they are not broken on the way in.
+        run: python3 -m py_compile tools/*.py
