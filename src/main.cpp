@@ -413,10 +413,14 @@ static void saveUpdateCfg() {
   File f = LittleFS.open("/update.cfg", "w"); if (!f) return;
   f.println(updateUrl); f.println(updateIntervalH); f.close();
 }
-static bool fetchBlocklist(String url) {
-  url.trim(); if (!url.length()) { updateStatus = "no url set"; return false; }
+// A .bin URL is a prebuilt hash blob and goes to flash; anything else is treated as
+// a text source (hosts / AdGuard syntax) and is hashed straight into PSRAM as it
+// streams, so the box can point at an upstream list directly — nothing to prebuild,
+// nothing multi-MB written to flash. Several URLs may be given, separated by spaces;
+// they merge into one list.
+static bool fetchOne(String url, bool textMode, size_t* total) {
   Serial.printf("[remote] GET %s\n", url.c_str());
-  WiFiClientSecure cs; cs.setInsecure();            // blocklist isn't secret -> skip cert pinning
+  WiFiClientSecure cs; cs.setInsecure();            // a public blocklist needs no pinning
   WiFiClient cl;
   HTTPClient http; http.setTimeout(20000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);  // GitHub release -> CDN redirect
@@ -424,22 +428,55 @@ static bool fetchBlocklist(String url) {
   if (!(https ? http.begin(cs, url) : http.begin(cl, url))) { updateStatus = "begin failed"; return false; }
   int code = http.GET();
   if (code != HTTP_CODE_OK) { http.end(); updateStatus = "HTTP " + String(code); Serial.printf("[remote] %s\n", updateStatus.c_str()); return false; }
-  beginBlocklistSwap();
-  File f = LittleFS.open("/blocklist.new", "w");
-  if (!f) { http.end(); updateStatus = "fs open failed"; abortBlocklistSwap(); return false; }
-  WiFiClient* stream = http.getStreamPtr();
-  int len = http.getSize(); uint8_t b[1024]; size_t total = 0; uint32_t idle = millis();
-  while (http.connected() && (len < 0 || (int)total < len)) {
-    size_t avail = stream->available();
-    if (avail) { int n = stream->readBytes(b, avail > sizeof(b) ? sizeof(b) : avail); if (n > 0) { f.write(b, n); total += n; idle = millis(); } }
-    else { if (millis() - idle > 15000) break; delay(2); }
+  File f;
+  if (!textMode) {
+    f = LittleFS.open("/blocklist.new", "w");
+    if (!f) { http.end(); updateStatus = "fs open failed"; return false; }
   }
-  f.close(); http.end();
-  bool complete = len < 0 || (int)total == len;     // a cut-off download never goes live
-  bool ok = complete && commitNewBlocklist();
-  if (!complete) abortBlocklistSwap();
-  updateStatus = ok ? ("ok: " + String(dnsBlocklistCount()) + " domains")
-                    : (complete ? "bad data (" : "incomplete (") + String(total) + "B)";
+  WiFiClient* stream = http.getStreamPtr();
+  int len = http.getSize(); static uint8_t b[1460]; size_t got = 0; uint32_t idle = millis();
+  while (http.connected() && (len < 0 || (int)got < len)) {
+    size_t avail = stream->available();
+    if (avail) {
+      int n = stream->readBytes(b, avail > sizeof(b) ? sizeof(b) : avail);
+      if (n > 0) { if (textMode) dnsTextFeed(b, n); else f.write(b, n); got += n; idle = millis(); }
+    } else { if (millis() - idle > 15000) break; delay(2); }
+  }
+  if (f) f.close();
+  http.end();
+  *total += got;
+  if (len >= 0 && (int)got != len) { updateStatus = "incomplete (" + String(got) + "B)"; return false; }
+  return true;
+}
+
+static bool fetchBlocklist(String urls) {
+  urls.trim(); if (!urls.length()) { updateStatus = "no url set"; return false; }
+  const bool textMode = dnsUsesPsram() && !urls.endsWith(".bin");
+  if (textMode && !dnsTextBegin()) { updateStatus = "no memory for list build"; return false; }
+  if (!textMode) beginBlocklistSwap();
+
+  size_t total = 0; bool ok = true;
+  for (int i = 0; ok && i < urls.length(); ) {      // space-separated list of sources
+    while (i < urls.length() && urls[i] == ' ') i++;
+    int sp = urls.indexOf(' ', i); if (sp < 0) sp = urls.length();
+    if (sp > i) ok = fetchOne(urls.substring(i, sp), textMode, &total);
+    i = sp;
+  }
+
+  if (textMode) {
+    uint32_t parsed = dnsTextCount();
+    ok = ok && dnsTextCommit();
+    if (!ok) dnsTextAbort();
+    if (ok && !dnsSaveBlocklist(BLOCKLIST_PATH))   // live either way, just not across a reboot
+      Serial.println("[remote] built list could not be saved to flash");
+    updateStatus = ok ? ("ok: " + String(dnsBlocklistCount()) + " domains")
+                      : ("failed after " + String(parsed) + " domains / " + String(total / 1024) + "KB");
+  } else {
+    ok = ok && commitNewBlocklist();
+    if (!ok) abortBlocklistSwap();
+    updateStatus = ok ? ("ok: " + String(dnsBlocklistCount()) + " domains")
+                      : ("bad data (" + String(total) + "B)");
+  }
   Serial.printf("[remote] %s\n", updateStatus.c_str());
   return ok;
 }
@@ -509,7 +546,12 @@ static bool connectWiFi() {
     uint8_t ipb[4], gwb[4], mb[4];
     parseIP(sip, ipb); parseIP(sgw, gwb); parseIP(smask, mb);
     IPAddress lip(ipb), lgw(gwb), lmask(mb);
-    if (!WiFi.config(lip, lgw, lmask)) Serial.println("[setup] static IP config FAILED, falling back to DHCP");
+    // The 3-argument form leaves the resolver at 0.0.0.0, so the device itself
+    // could not look up a hostname: every blocklist auto-update failed with
+    // "DNS Failed ... error -54" for as long as a static IP was configured.
+    // Resolve through our own upstream, with the router as a fallback.
+    const IPAddress dns1(UPSTREAM_IP), dns2 = lgw;
+    if (!WiFi.config(lip, lgw, lmask, dns1, dns2)) Serial.println("[setup] static IP config FAILED, falling back to DHCP");
   }
 #endif
   WiFi.begin(ssid, pass);

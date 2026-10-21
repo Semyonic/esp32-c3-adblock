@@ -15,20 +15,11 @@
 #include <esp_timer.h>
 #include <esp_random.h>
 #include <esp_heap_caps.h>
+#include <algorithm>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
-
-#ifndef UPSTREAM_IP
-#define UPSTREAM_IP 9, 9, 9, 9                    // Quad9: malware filtering, no logging
-#endif
-#ifndef UPSTREAM2_IP
-#define UPSTREAM2_IP 149, 112, 112, 112           // Quad9 secondary: retry target
-#endif
-#ifndef UPSTREAM_PORT
-#define UPSTREAM_PORT 53
-#endif
 
 static const int HASH_BYTES = 5;
 static const uint64_t HASH_MASK = (1ULL << (HASH_BYTES * 8)) - 1;
@@ -142,6 +133,133 @@ bool dnsLoadBlocklist(const char* path) {
   }
   xSemaphoreGive(blFileMux);
   return true;
+}
+
+// ---------- build from text sources (PSRAM) ----------
+// One allocation sized from free PSRAM, filled with 64-bit hashes as lines arrive,
+// then sorted, deduped and packed to 5 bytes *in place* (5n < 8n, so the write
+// pointer never catches the read pointer) before being published.
+static uint64_t* bld = nullptr;
+static uint32_t bldN = 0, bldCap = 0;
+static char bldLine[300];
+static int bldLen = 0;
+static bool bldOver = false;
+
+bool dnsTextBegin() {
+  if (!usePsram) return false;
+  dnsTextAbort();
+  // Size from the largest free block, not total free: the live list and the answer
+  // cache fragment PSRAM, so "5 MB free" can still refuse a 4.7 MB allocation.
+  size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  uint32_t cap = big > 768 * 1024 ? (big - 256 * 1024) / sizeof(uint64_t) : 0;
+  if (cap > 900000) cap = 900000;              // 900k domains is far past any public list
+  if (cap < 20000) return false;
+  bld = (uint64_t*)heap_caps_malloc((size_t)cap * sizeof(uint64_t), MALLOC_CAP_SPIRAM);
+  while (!bld && cap > 20000) {                // lost a race for the block: ask for less
+    cap /= 2;
+    bld = (uint64_t*)heap_caps_malloc((size_t)cap * sizeof(uint64_t), MALLOC_CAP_SPIRAM);
+  }
+  if (!bld) return false;
+  bldCap = cap; bldN = 0; bldLen = 0; bldOver = false;
+  return true;
+}
+void dnsTextAbort() {
+  if (bld) heap_caps_free(bld);
+  bld = nullptr; bldN = bldCap = 0; bldLen = 0;
+}
+uint32_t dnsTextCount() { return bldN; }
+
+// hosts ("0.0.0.0 ads.example"), AdGuard ("||ads.example^"), or a bare domain.
+// Allow rules (@@), regex (/.../) and anything with a wildcard or odd character
+// are skipped — the engine matches a domain and its parents, nothing else.
+static void bldLineDone() {
+  char* s = bldLine; s[bldLen] = 0;
+  while (*s == ' ' || *s == '\t') s++;
+  if (!*s || *s == '#' || *s == '!' || *s == '[' || *s == '/') return;
+  if (s[0] == '@' && s[1] == '@') return;
+  if (s[0] == '|' && s[1] == '|') s += 2;
+  else {
+    char* sp = strpbrk(s, " \t");              // hosts format: strip the IP column
+    if (sp) {
+      bool ip = strncmp(s, "0.0.0.0", 7) == 0 || strncmp(s, "127.0.0.1", 9) == 0 ||
+                strncmp(s, "::", 2) == 0 || strncmp(s, "::1", 3) == 0;
+      if (!ip) return;
+      s = sp; while (*s == ' ' || *s == '\t') s++;
+    }
+  }
+  char* e = s;                                  // cut at the first terminator
+  while (*e && *e != '^' && *e != '$' && *e != ' ' && *e != '\t' && *e != '#') e++;
+  *e = 0;
+  if (e > s && e[-1] == '.') *--e = 0;
+  size_t n = e - s;
+  if (n < 4 || n > 253) return;
+  bool dot = false;
+  for (char* p = s; *p; p++) {
+    char c = *p | 0x20;                         // lowercase in place
+    if (c >= 'a' && c <= 'z') { *p = c; continue; }
+    if ((*p >= '0' && *p <= '9') || *p == '-' || *p == '_') continue;
+    if (*p == '.') { dot = true; continue; }
+    return;                                     // wildcard, slash, colon...
+  }
+  if (!dot || strcmp(s, "localhost") == 0) return;
+  if (n > 4 && memcmp(s, "www.", 4) == 0) { s += 4; n -= 4; }
+  if (bldN < bldCap) bld[bldN++] = dnsHash(s, n);
+  else bldOver = true;
+}
+
+void dnsTextFeed(const uint8_t* data, int n) {
+  if (!bld) return;
+  for (int i = 0; i < n; i++) {
+    char c = (char)data[i];
+    if (c == '\n' || c == '\r') { if (bldLen) bldLineDone(); bldLen = 0; }
+    else if (bldLen < (int)sizeof(bldLine) - 1) bldLine[bldLen++] = c;
+    else bldLen = sizeof(bldLine);              // overlong line: drop the rest of it
+  }
+}
+
+bool dnsTextCommit() {
+  if (!bld) return false;
+  if (bldLen && bldLen < (int)sizeof(bldLine)) bldLineDone();
+  if (bldN < 1000) { dnsTextAbort(); return false; }     // clearly not a blocklist
+  std::sort(bld, bld + bldN);
+  uint8_t* out = (uint8_t*)bld;                 // pack in place: 5 bytes per entry
+  uint32_t kept = 0; uint64_t prev = UINT64_MAX;
+  for (uint32_t i = 0; i < bldN; i++) {
+    uint64_t v = bld[i];
+    if (v == prev) continue;
+    prev = v;
+    for (int k = 0; k < HASH_BYTES; k++) out[kept * HASH_BYTES + k] = (uint8_t)(v >> (8 * k));
+    kept++;
+  }
+  uint8_t* shrunk = (uint8_t*)heap_caps_realloc(bld, (size_t)kept * HASH_BYTES, MALLOC_CAP_SPIRAM);
+  if (shrunk) out = shrunk;                     // shrink is best-effort
+  Blocklist* nb = new Blocklist{out, kept};
+  Blocklist* old = blMem;
+  blMem = nb;
+  bld = nullptr; bldN = bldCap = 0; bldLen = 0;
+  if (old) { vTaskDelay(pdMS_TO_TICKS(50)); heap_caps_free(old->data); delete old; }
+  if (bldOver) Serial.println("[list] capacity reached: list truncated");
+  return true;
+}
+
+// Write the live PSRAM list to flash via a temp file, so a crash mid-write leaves
+// the previous list intact. Called after a text rebuild; ~1 MB, a second or two.
+bool dnsSaveBlocklist(const char* path) {
+  const Blocklist* b = blMem;
+  if (!usePsram || !b || !b->n) return false;
+  const char* tmp = "/blocklist.tmp";
+  File f = LittleFS.open(tmp, "w");
+  if (!f) return false;
+  size_t total = (size_t)b->n * HASH_BYTES, done = 0;
+  while (done < total) {
+    size_t chunk = total - done > 4096 ? 4096 : total - done;
+    if (f.write(b->data + done, chunk) != chunk) { f.close(); LittleFS.remove(tmp); return false; }
+    done += chunk;
+    vTaskDelay(1);                               // flash writes stall the CPU; yield between them
+  }
+  f.close();
+  LittleFS.remove(path);
+  return LittleFS.rename(tmp, path);
 }
 
 void dnsUnloadBlocklist() {

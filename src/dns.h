@@ -7,6 +7,19 @@
 #pragma once
 #include <Arduino.h>
 
+// Upstream resolver, shared with the device's own hostname lookups (see WiFi.config
+// in main.cpp). dns.cpp forwards here when DoT is unavailable; dot.cpp holds the
+// encrypted link to the same operator.
+#ifndef UPSTREAM_IP
+#define UPSTREAM_IP 9, 9, 9, 9                    // Quad9: malware filtering, no logging
+#endif
+#ifndef UPSTREAM2_IP
+#define UPSTREAM2_IP 149, 112, 112, 112           // Quad9 secondary
+#endif
+#ifndef UPSTREAM_PORT
+#define UPSTREAM_PORT 53
+#endif
+
 void     dnsInit();                          // call first in setup(): allocs, decides PSRAM vs file mode
 void     dnsStart(uint16_t port = 53);       // after WiFi is up: opens sockets, starts the task
 uint64_t dnsHash(const char* s, size_t n);   // 40-bit FNV-1a, same as tools/build_blocklist.py
@@ -17,6 +30,16 @@ bool     dnsLoadBlocklist(const char* path);
 void     dnsUnloadBlocklist();               // file mode only: close before the file is replaced
 uint32_t dnsBlocklistCount();
 bool     dnsUsesPsram();
+
+// Build a list straight from upstream TEXT sources (hosts / AdGuard syntax),
+// hashing and sorting in PSRAM as the bytes stream in — no prebuilt .bin to host,
+// no multi-MB temp file on flash. PSRAM only; returns false on a board without it.
+bool     dnsTextBegin();
+void     dnsTextFeed(const uint8_t* data, int n);
+bool     dnsTextCommit();                    // sorts, dedupes, publishes; false = nothing usable
+bool     dnsSaveBlocklist(const char* path); // persist the live list so a reboot keeps it
+void     dnsTextAbort();
+uint32_t dnsTextCount();                     // domains accepted so far
 
 void     dnsSetCustom(const uint64_t* hashes, int n);
 void     dnsSetBanned(const uint32_t* ips, int n);

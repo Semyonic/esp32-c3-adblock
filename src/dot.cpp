@@ -42,7 +42,7 @@ static const uint32_t KEEPALIVE_MS = 7000;    // Quad9 drops an idle link at 10 
 static const uint32_t WARM_MS     = 120000;   // ...but only keep it warm while clients are active
 static const uint32_t BACKOFF_MS  = 30000;    // after repeated failures, stop retrying for a while
 static const int      MAX_FAILS   = 3;
-static const int      QDEPTH      = 24;
+static const int      QDEPTH      = 48;   // >= the DNS engine's 64 pending slots in practice
 
 struct DotReq { uint16_t slot, gen, len; uint8_t msg[512]; };
 static QueueHandle_t dotQ;
@@ -138,14 +138,29 @@ static void dotTask(void*) {
       if (!up) { xQueueReset(dotQ); vTaskDelay(pdMS_TO_TICKS(250)); continue; }
     }
 
-    // Poll hard for 2 s after each send (a reply is due within one upstream RTT),
-    // then idle on the queue. Replies are matched by id, so order doesn't matter.
+    // Drain the whole queue into the pipeline before waiting on anything: one
+    // query per iteration meant a 32-query burst trickled out a tick at a time.
+    // Then poll hard for 2 s after the last send (a reply is due within one
+    // upstream RTT) and idle on the queue after that. Replies are matched by id,
+    // so they may come back in any order.
     DotReq r;
-    bool busy = nowMs() - lastSend < 2000;
-    if (xQueueReceive(dotQ, &r, pdMS_TO_TICKS(busy ? 1 : 100)) == pdTRUE) {
+    bool sent = false, dead = false;
+    while (!dead && xQueueReceive(dotQ, &r, 0) == pdTRUE) {
       r.msg[0] = r.slot; r.msg[1] = r.gen;     // wire id = slot<<8 | gen, so a reply finds its slot
-      uint8_t hdr[2] = { (uint8_t)(r.len >> 8), (uint8_t)r.len };
-      if (cli.write(hdr, 2) != 2 || cli.write(r.msg, r.len) != r.len) { cli.stop(); continue; }
+      uint8_t frame[2 + sizeof(DotReq::msg)];  // one write: header and body in the same TLS record
+      frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
+      memcpy(frame + 2, r.msg, r.len);
+      if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); dead = true; break; }
+      stQ++; sent = true;
+    }
+    if (dead) continue;
+    if (sent) lastSend = nowMs();
+    else if (xQueueReceive(dotQ, &r, pdMS_TO_TICKS(nowMs() - lastSend < 2000 ? 1 : 100)) == pdTRUE) {
+      uint8_t frame[2 + sizeof(DotReq::msg)];
+      r.msg[0] = r.slot; r.msg[1] = r.gen;
+      frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
+      memcpy(frame + 2, r.msg, r.len);
+      if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); continue; }
       stQ++; lastSend = nowMs();
     }
     drainReplies();
