@@ -373,7 +373,9 @@ static File upFile;
 static void handleUploadDone() {
   if (!upAuthOk) { web.requestAuthentication(); return; }
   web.send(upOk ? 200 : 500, "text/plain",
-           upOk ? "ok" : "rejected: empty or size not a multiple of 5 (not a blocklist.bin?)");
+           upOk ? "ok" : "rejected: not a blocklist.bin — it must be sorted 5-byte "
+                         "hashes (build one with tools/build_blocklist.py), or point "
+                         "Remote auto-update at a text list instead");
 }
 static void handleUpload() {
   HTTPUpload& u = web.upload();

@@ -53,10 +53,13 @@ static bool usePsram = false;
 // list is freed at the *next* swap rather than after a delay: a lookup that was
 // already walking it finishes in microseconds, and swaps are minutes apart, so
 // this needs no timing assumption to be safe.
+static void reapRetired() {
+  if (retired) { heap_caps_free(retired->data); delete retired; retired = nullptr; }
+}
 static void publish(Blocklist* nb) {
   Blocklist* old = blMem;
   blMem = nb;
-  if (retired) { heap_caps_free(retired->data); delete retired; }
+  reapRetired();
   retired = old;
 }
 
@@ -158,6 +161,7 @@ static bool bldOver = false;
 bool dnsTextBegin() {
   if (!usePsram) return false;
   dnsTextAbort();
+  reapRetired();                               // a list displaced one swap ago: give the build its MB
   // Size from the largest free block, not total free: the live list and the answer
   // cache fragment PSRAM, so "5 MB free" can still refuse a 4.7 MB allocation.
   size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
