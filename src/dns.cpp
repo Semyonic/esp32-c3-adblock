@@ -438,7 +438,14 @@ static CacheEnt* cacheFind(uint64_t key, const uint8_t* q, int qend) {
 // burst. Per-query ports are also the standard defence against cache poisoning.
 // lwIP has 16 UDP PCBs in total (DHCP, mDNS, OTA... hold ~6), hence 8 ports; a
 // miss beyond that waits in the queue for the next free port instead of dropping.
+// Sized for the board: the pending table is static, and 64 slots x 512 B overflows
+// the classic ESP32's static DRAM by 3 KB. A single question never exceeds 282 B
+// (255-byte name + EDNS), so 320 is only tight for a client that pads its queries.
+#ifdef BOARD_HAS_PSRAM
 static const int MAX_PEND = 64, PEND_Q = 512, UP_PORTS = 8;
+#else
+static const int MAX_PEND = 16, PEND_Q = 320, UP_PORTS = 6;
+#endif
 static const int8_t PORT_WAIT = -1, PORT_DOT = -2;
 struct Pending {
   uint64_t key;

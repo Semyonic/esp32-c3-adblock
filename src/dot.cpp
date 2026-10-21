@@ -42,7 +42,13 @@ static const uint32_t KEEPALIVE_MS = 7000;    // Quad9 drops an idle link at 10 
 static const uint32_t WARM_MS     = 120000;   // ...but only keep it warm while clients are active
 static const uint32_t BACKOFF_MS  = 30000;    // after repeated failures, stop retrying for a while
 static const int      MAX_FAILS   = 3;
-static const int      QDEPTH      = 48;   // >= the DNS engine's 64 pending slots in practice
+#ifdef BOARD_HAS_PSRAM
+static const int      QDEPTH      = 48;   // covers a burst against the engine's 64 slots
+static const int      NSLOTS      = 8;    // 12 KB; 0 drops measured at 140 queries/s
+#else
+static const int      QDEPTH      = 12;   // the small boards have no DRAM to spare
+static const int      NSLOTS      = 4;
+#endif
 
 struct DotReq { uint32_t t; uint16_t slot, gen, len; uint8_t msg[512]; };   // t = submitted at
 static QueueHandle_t dotQ;
@@ -72,7 +78,7 @@ bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len) {
 // Hand-off buffers to the lwIP thread. Running out means a reply is thrown away
 // and that query waits for its UDP retry, so keep enough for a burst in flight.
 struct Slot { uint8_t data[1536]; int len; uint16_t slot, gen; volatile bool busy; };
-static Slot slots[8];                          // 12 KB; 0 drops at 140 queries/s with these
+static Slot slots[NSLOTS];
 static void deliverCb(void* arg) {
   Slot* s = (Slot*)arg;
   dotDeliver(s->slot, s->gen, s->data, s->len);
