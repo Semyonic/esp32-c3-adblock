@@ -321,7 +321,7 @@ static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
 DnsStats dnsStats() {
   DotStats d = dotStats();
-  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.up };
+  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, d.up };
 }
 
 // ---------- answer cache ----------

@@ -15,7 +15,7 @@ bool dotReady();                                           // connected, or will
 bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len);
 void dotNoteClient();                                      // a client queried: keep the link warm
 
-struct DotStats { uint32_t queries, replies, fails, handshakes, hsMs; bool up; };
+struct DotStats { uint32_t queries, replies, fails, handshakes, hsMs, dropped; bool up; };
 DotStats dotStats();
 
 // Implemented in dns.cpp, called from the lwIP thread via tcpip_callback.

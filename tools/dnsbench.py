@@ -7,9 +7,11 @@ Compares the device against a direct upstream on the paths that matter:
   unique   - fresh random subdomains (always a cache miss -> upstream)
   burst    - N unique queries sent at once (concurrency / head-of-line)
 
-usage: dnsbench.py [device_ip] [upstream_ip] [-n COUNT]
+  soak     - sustained mixed load, reporting loss and free heap as it goes
+
+usage: dnsbench.py [device_ip] [upstream_ip] [-n COUNT] [--soak SECONDS]
 """
-import random, socket, string, struct, sys, time
+import json, random, socket, string, struct, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 BLOCKED, REPEAT = "googlesyndication.com", "github.com"
@@ -50,9 +52,37 @@ def report(label: str, rtts):
           f"p99={pct(.99):7.1f}  max={ok[-1]:7.1f} ms")
 
 
+def soak(dev, seconds):
+    """Steady mixed load: does latency, loss or free memory drift over time?"""
+    print(f"soak {seconds}s — 8 queries in flight, mixed blocked/cached/unique")
+    names = lambda: random.choice([BLOCKED, REPEAT, unique_name()])
+    end, bucket, lost, total = time.time() + seconds, [], 0, 0
+    t0 = last = time.time()
+    with ThreadPoolExecutor(8) as ex:
+        while time.time() < end:
+            for r in ex.map(lambda _: ask(dev, names()), range(40)):
+                total += 1
+                bucket.append(r) if r is not None else None
+                lost += r is None
+            if time.time() - last >= 20 or time.time() >= end:
+                ok = sorted(bucket)
+                try:
+                    s = json.load(urllib.request.urlopen(f'http://{dev}/stats.json', timeout=5))
+                    extra = f"  heap {s['heap'] // 1024}K  psram {s.get('psram', 0) // 1024}K  dot {s.get('dot')}"
+                except Exception:
+                    extra = '  (stats unavailable)'
+                print(f"  +{time.time() - t0:5.0f}s  {total:6d} queries  lost {lost:3d}  "
+                      f"p50 {ok[len(ok) // 2]:6.1f}  p99 {ok[int(len(ok) * .99)]:7.1f} ms{extra}")
+                bucket, last = [], time.time()
+    print(f"  total {total} queries, {lost} lost ({100 * lost / max(total, 1):.2f}%)")
+
+
 def main():
     argv = sys.argv[1:]
     n = 40
+    if "--soak" in argv:
+        i = argv.index("--soak"); secs = int(argv[i + 1]); del argv[i:i + 2]
+        return soak(argv[0] if argv else "192.168.1.240", secs)
     if "-n" in argv:
         i = argv.index("-n"); n = int(argv[i + 1]); del argv[i:i + 2]
     dev = argv[0] if argv else "192.168.1.240"

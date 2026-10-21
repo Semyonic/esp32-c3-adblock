@@ -51,6 +51,7 @@ bool     dnsPollEvent(DnsEvent* e);          // drain from loop(): per-client co
 struct DnsStats {
   uint32_t blocked, allowed, cacheHits, upstreamLost, prefetches;
   uint32_t dotQueries, dotHandshakes, dotHsMs;   // queries sent encrypted; TLS link cost
+  uint32_t dotDropped;                           // replies that found no free hand-off slot
   bool dotUp;
 };
 DnsStats dnsStats();

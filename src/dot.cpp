@@ -50,7 +50,7 @@ static QueueHandle_t dotQ;
 static volatile bool up = false;
 static volatile bool linkDown = false;        // known-broken: send over UDP instead of waiting
 static volatile uint32_t lastClientMs = 0;
-static volatile uint32_t stQ = 0, stR = 0, stF = 0, stHs = 0, stHsMs = 0;
+static volatile uint32_t stQ = 0, stR = 0, stF = 0, stHs = 0, stHsMs = 0, stDrop = 0;
 
 static inline uint32_t nowMs() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -60,7 +60,7 @@ void dotNoteClient() { lastClientMs = nowMs(); }
 // failed, say no: the engine then sends plaintext immediately instead of letting
 // every query wait out its 350 ms fallback timer for the length of the outage.
 bool dotReady() { return up || (!linkDown && nowMs() - lastClientMs < WARM_MS); }
-DotStats dotStats() { return { stQ, stR, stF, stHs, stHsMs, up }; }
+DotStats dotStats() { return { stQ, stR, stF, stHs, stHsMs, stDrop, up }; }
 
 bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len) {
   if (!dotQ || len > sizeof(DotReq::msg)) return false;
@@ -69,8 +69,10 @@ bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len) {
 }
 
 // ---------- task ----------
+// Hand-off buffers to the lwIP thread. Running out means a reply is thrown away
+// and that query waits for its UDP retry, so keep enough for a burst in flight.
 struct Slot { uint8_t data[1536]; int len; uint16_t slot, gen; volatile bool busy; };
-static Slot slots[6];
+static Slot slots[8];                          // 12 KB; 0 drops at 140 queries/s with these
 static void deliverCb(void* arg) {
   Slot* s = (Slot*)arg;
   dotDeliver(s->slot, s->gen, s->data, s->len);
@@ -116,8 +118,8 @@ static int drainReplies() {
     for (auto& sl : slots) if (!sl.busy) { s = &sl; break; }
     if (s) {                                   // slot index + gen are carried in the wire id
       memcpy(s->data, rbuf + 2, len); s->len = len; s->slot = wid >> 8; s->gen = wid & 0xFF; s->busy = true;
-      if (tcpip_callback(deliverCb, s) != ERR_OK) s->busy = false;
-    }
+      if (tcpip_callback(deliverCb, s) != ERR_OK) { s->busy = false; stDrop++; }
+    } else stDrop++;
     rlen = 0;
   }
   return got;
@@ -139,7 +141,17 @@ static bool sendQuery(DotReq& r) {
   uint8_t frame[2 + sizeof(DotReq::msg)];
   frame[0] = r.len >> 8; frame[1] = (uint8_t)r.len;
   memcpy(frame + 2, r.msg, r.len);
-  if (cli.write(frame, r.len + 2) != (size_t)(r.len + 2)) { cli.stop(); return false; }
+  // A short write means the send buffer is full, not that the link is gone —
+  // treating it as an error tore the connection down (and paid a 1.6 s handshake)
+  // every time queries arrived faster than the socket drained.
+  size_t total = r.len + 2, off = 0;
+  uint32_t deadline = nowMs() + 1000;
+  while (off < total) {
+    int w = cli.write(frame + off, total - off);
+    if (w > 0) { off += w; continue; }
+    if (!cli.connected() || nowMs() > deadline) { cli.stop(); return false; }
+    vTaskDelay(1);
+  }
   stQ++;
   return true;
 }

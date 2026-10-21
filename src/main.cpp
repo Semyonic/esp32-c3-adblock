@@ -294,6 +294,7 @@ static void handleStats() {
   j += "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + ds.blocked + ",\"allowed\":" + ds.allowed + ",\"chits\":" + ds.cacheHits +
              ",\"dot\":" + (ds.dotUp ? "true" : "false") + ",\"dotq\":" + ds.dotQueries +
              ",\"doths\":" + ds.dotHandshakes + ",\"dothsms\":" + ds.dotHsMs +
+             ",\"lost\":" + ds.upstreamLost + ",\"dotdrop\":" + ds.dotDropped +
              ",\"domains\":" + dnsBlocklistCount() + ",\"rssi\":" + WiFi.RSSI() + ",\"temp\":" + String(temperatureRead(), 1) +
              ",\"heap\":" + ESP.getFreeHeap() + ",\"psram\":" + ESP.getFreePsram() + ",\"uptime\":\"" + ut + "\"" +
              ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
