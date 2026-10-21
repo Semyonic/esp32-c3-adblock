@@ -17,8 +17,11 @@
 #include <Preferences.h>       // NVS store for provisioned WiFi creds
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
+#include "MD5Builder.h"   // /flashmd5 diagnostic
+#include <esp_ota_ops.h>  // /otainfo: running/next partition labels
 #include "secrets.h"   // WIFI_SSID / WIFI_PASS — used only as a FALLBACK if no creds
                        // have been provisioned via the captive portal (copy secrets.example.h)
+#include "lcd.h"       // ST7789 status display (Waveshare 1.47 board)
 
 // ---- config ----
 #ifndef UPSTREAM_IP
@@ -50,9 +53,14 @@ static uint8_t cacheRes[CACHE_SIZE];
 static uint8_t cacheValid[CACHE_SIZE];
 static uint8_t rangeBuf[MAX_RANGE * HASH_BYTES];
 
-struct Dev { uint32_t ip; uint8_t mac[6]; uint32_t blocked, allowed, lastSeen; bool banned; String label; };
+struct Dev { uint32_t ip; uint8_t mac[6]; uint32_t blocked, allowed, lastSeen; bool banned; String label; String mdns; uint8_t mdnsTried; };
 static const int MAX_CLIENTS = 96;
 Dev clients[MAX_CLIENTS]; int numClients = 0;
+
+// manual per-device names, keyed by MAC (survives DHCP address changes)
+static const int MAX_LABELS = 96;
+struct LabelRec { String mac, name; };
+static LabelRec labels[MAX_LABELS]; static int numLabels = 0;
 
 static const int MAX_CUSTOM = 200;
 String customDom[MAX_CUSTOM]; uint64_t customHash[MAX_CUSTOM]; int numCustom = 0;
@@ -81,6 +89,7 @@ static uint64_t fnv40(const char* s, size_t n) {
   for (size_t i = 0; i < n; i++) { h ^= (uint8_t)s[i]; h *= 0x100000001b3ULL; }
   return h & HASH_MASK;
 }
+uint64_t fnv40pub(const char* s, size_t n) { return fnv40(s, n); }
 static inline uint64_t unpackHash(const uint8_t* b) {
   uint64_t v = 0;
   for (int k = 0; k < HASH_BYTES; k++) v |= (uint64_t)b[k] << (8 * k);
@@ -206,7 +215,37 @@ static void saveBanned() {
   f.close();
 }
 
+// ---------- device labels (manual names, MAC-keyed) ----------
+static void loadLabels() {
+  numLabels = 0; File f = LittleFS.open("/labels.txt", "r"); if (!f) return;
+  while (f.available() && numLabels < MAX_LABELS) {
+    String l = f.readStringUntil('\n'); l.trim();
+    int eq = l.indexOf('='); if (eq != 17) continue;          // 17 = "aa:bb:cc:dd:ee:ff"
+    String mac = l.substring(0, eq), nm = l.substring(eq + 1); nm.trim();
+    mac.toLowerCase(); if (nm.length()) { labels[numLabels].mac = mac; labels[numLabels].name = nm; numLabels++; }
+  }
+  f.close();
+}
+static void saveLabels() {
+  File f = LittleFS.open("/labels.txt", "w"); if (!f) return;
+  for (int i = 0; i < numLabels; i++) f.println(labels[i].mac + "=" + labels[i].name);
+  f.close();
+}
+static String getLabel(const String& mac) {
+  for (int i = 0; i < numLabels; i++) if (labels[i].mac == mac) return labels[i].name;
+  return "";
+}
+static void setLabel(const String& mac, const String& name) {   // name "" = remove
+  String m = mac; m.toLowerCase();
+  int hit = -1; for (int i = 0; i < numLabels && hit < 0; i++) if (labels[i].mac == m) hit = i;
+  if (!name.length()) { if (hit >= 0) { labels[hit] = labels[numLabels - 1]; numLabels--; } }
+  else if (hit >= 0) labels[hit].name = name;
+  else if (numLabels < MAX_LABELS) { labels[numLabels].mac = m; labels[numLabels].name = name; numLabels++; }
+  saveLabels();
+}
+
 // ---------- client table ----------
+static String macStr(const uint8_t* m);
 static void getMac(uint32_t ip, uint8_t* mac) {
   memset(mac, 0, 6); ip4_addr_t ipa; ipa.addr = ip;
   struct eth_addr* eth = nullptr; const ip4_addr_t* ipret = nullptr;
@@ -217,10 +256,113 @@ static Dev* getClient(uint32_t ip) {
   for (int i = 0; i < numClients; i++) if (clients[i].ip == ip) { clients[i].lastSeen = millis(); return &clients[i]; }
   if (numClients < MAX_CLIENTS) {
     Dev* c = &clients[numClients++];
-    c->ip = ip; c->blocked = c->allowed = 0; c->lastSeen = millis(); c->banned = isBannedIP(ip); c->label = "";
-    getMac(ip, c->mac); return c;
+    c->ip = ip; c->blocked = c->allowed = 0; c->lastSeen = millis(); c->banned = isBannedIP(ip); c->label = ""; c->mdns = ""; c->mdnsTried = 0;
+    getMac(ip, c->mac);
+    c->label = getLabel(macStr(c->mac));      // manual name survives IP changes
+    return c;
   }
   return nullptr;
+}
+
+// ---------- mDNS reverse lookup (PTR -> hostname for new clients) ----------
+// Queries 224.0.0.251:5353 from an ephemeral port (legacy unicast mDNS), so no
+// multicast membership is needed and we don't collide with MDNS.begin()'s socket
+// on 5353. One client at a time, 2 s deadline, one attempt per client per boot —
+// all non-blocking for the DNS hot path.
+static WiFiUDP mdnsCli;
+static Dev* mdnsTarget = nullptr;
+static uint32_t mdnsSentAt = 0;
+static char mdnsQName[32];                       // "d.c.b.a.in-addr.arpa"
+static bool mdnsUp = false;
+
+static bool mdnsBegin() {
+  mdnsUp = mdnsCli.begin(5354);                  // ephemeral: legacy queries get unicasted back
+  if (!mdnsUp) Serial.println("[mdns] reverse lookup socket failed");
+  return mdnsUp;
+}
+// Parse a DNS-format name (with compression pointers) starting at *pos.
+static bool parseDnsName(const uint8_t* p, int len, int* pos, char* out, int outCap) {
+  int o = 0, jumps = 0, save = -1, i = *pos;
+  while (jumps++ < 8) {
+    if (i >= len) return false;
+    uint8_t l = p[i];
+    if ((l & 0xC0) == 0xC0) { if (i + 1 >= len) return false; if (save < 0) save = i + 2; i = ((l & 0x3F) << 8) | p[i + 1]; continue; }
+    i++;
+    if (l == 0) break;
+    if (i + l > len || o + l + 1 >= outCap) return false;
+    if (o) out[o++] = '.';
+    memcpy(out + o, p + i, l); o += l; i += l;
+  }
+  out[o] = 0; *pos = save >= 0 ? save : i;
+  return true;
+}
+static void sendPtrQuery(Dev* c) {
+  IPAddress ip(c->ip);
+  uint8_t qp[64]; int o = 12;                          // 12-byte DNS header, written below
+  qp[0] = 0; qp[1] = 0; qp[2] = 0; qp[3] = 0;          // id 0, flags 0
+  qp[4] = 0; qp[5] = 1; qp[6] = 0; qp[7] = 0; qp[8] = 0; qp[9] = 0; qp[10] = 0; qp[11] = 0;  // qd=1, rest 0
+  uint8_t oct[4] = { ip[3], ip[2], ip[1], ip[0] };     // reversed octets
+  for (int k = 0; k < 4; k++) {
+    char t[4]; int n = snprintf(t, sizeof(t), "%u", oct[k]);
+    qp[o++] = (uint8_t)n; memcpy(qp + o, t, n); o += n;
+  }
+  memcpy(qp + o, "\7in-addr\4arpa", 13); o += 13; qp[o++] = 0;
+  qp[o++] = 0; qp[o++] = 12;                       // QTYPE = PTR
+  qp[o++] = 0; qp[o++] = 1;                        // QCLASS = IN
+  snprintf(mdnsQName, sizeof(mdnsQName), "%u.%u.%u.%u.in-addr.arpa", oct[0], oct[1], oct[2], oct[3]);
+  mdnsCli.flush();
+  mdnsCli.beginPacket(IPAddress(224, 0, 0, 251), 5353);
+  mdnsCli.write(qp, o);
+  mdnsCli.endPacket();
+  mdnsTarget = c; mdnsSentAt = millis();
+}
+// Returns true and fills `host` if the reply is a PTR answer to our question.
+static bool parsePtrReply(const uint8_t* p, int len, char* host, int cap) {
+  if (len < 12) return false;
+  int i = 12, qd = (p[4] << 8) | p[5];
+  char qn[32]; qn[0] = 0;
+  for (int k = 0; k < qd; k++) {
+    if (!parseDnsName(p, len, &i, qn, sizeof(qn))) return false;
+    i += 4;
+  }
+  if (strcmp(qn, mdnsQName) != 0) return false;
+  int an = (p[6] << 8) | p[7];
+  for (int k = 0; k < an; k++) {
+    char throwName[32];
+    if (!parseDnsName(p, len, &i, throwName, sizeof(throwName))) return false;
+    if (i + 10 > len) return false;
+    uint16_t type = (p[i] << 8) | p[i + 1]; int rdlen = (p[i + 8] << 8) | p[i + 9]; i += 10;
+    if (type == 12 && rdlen > 0 && i + rdlen <= len) {
+      int r = i;                                   // rdata is another domain name
+      if (!parseDnsName(p, len, &r, host, cap)) return false;
+      return true;
+    }
+    i += rdlen;
+  }
+  return false;
+}
+static void mdnsTick() {
+  if (!mdnsUp) return;
+  if (mdnsTarget) {
+    int sz = mdnsCli.parsePacket();
+    if (sz > 0) {
+      static uint8_t mbuf[512];
+      int n = mdnsCli.read(mbuf, sizeof(mbuf)); mdnsCli.flush();
+      Dev* t = mdnsTarget; mdnsTarget = nullptr; if (t) t->mdnsTried = 1;
+      char host[33];
+      if (n > 0 && parsePtrReply(mbuf, n, host, sizeof(host))) {
+        String h(host);
+        if (h.endsWith(".local")) h = h.substring(0, h.length() - 6);   // "MacBook-Pro.local" -> cleaner
+        h.trim();
+        if (h.length()) { t->mdns = h; Serial.printf("[mdns] %s -> %s\n", IPAddress(t->ip).toString().c_str(), h.c_str()); }
+      }
+    } else if (millis() - mdnsSentAt > 2000) {
+      Dev* t = mdnsTarget; mdnsTarget = nullptr; if (t) t->mdnsTried = 1;
+    }
+    return;
+  }
+  for (int i = 0; i < numClients; i++)
+    if (!clients[i].mdnsTried && WiFi.status() == WL_CONNECTED) { sendPtrQuery(&clients[i]); return; }
 }
 
 // ---------- DNS ----------
@@ -329,7 +471,9 @@ static void handleStats() {
              ",\"defcreds\":" + ((strcmp(WEB_PASS, "CHANGE_ME_WEB_PASSWORD") == 0 || strcmp(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") == 0) ? "true" : "false") +
              ",\"clients\":[";
   for (int i = 0; i < numClients; i++) { Dev& c = clients[i]; IPAddress ip(c.ip);
-    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (c.banned?"true":"false") + "}"; }
+    const char* src = c.label.length() ? "man" : (c.mdns.length() ? "mdns" : "ip");
+    String nm = c.label.length() ? c.label : (c.mdns.length() ? c.mdns : "");
+    j += (i ? "," : ""); j += "{\"ip\":\"" + ip.toString() + "\",\"mac\":\"" + macStr(c.mac) + "\",\"blocked\":" + c.blocked + ",\"allowed\":" + c.allowed + ",\"banned\":" + (c.banned?"true":"false") + ",\"name\":\"" + jesc(nm) + "\",\"src\":\"" + src + "\"}"; }
   j += "],\"custom\":[";
   for (int i = 0; i < numCustom; i++) { j += (i ? "," : ""); j += "\"" + jesc(customDom[i]) + "\""; }
   j += "]}";
@@ -507,7 +651,30 @@ static bool connectWiFi() {
   const char* pass = ss.length() ? pw.c_str() : WIFI_PASS;
   if (!ssid || !*ssid || strcmp(ssid, "YOUR_WIFI_SSID") == 0) return false;  // unconfigured
   Serial.printf("WiFi: connecting to \"%s\"%s\n", ssid, ss.length() ? " (provisioned)" : " (secrets.h)");
-  WiFi.mode(WIFI_STA); WiFi.setSleep(false); WiFi.begin(ssid, pass);
+  WiFi.mode(WIFI_STA); WiFi.setSleep(false);
+#ifdef STATIC_IP
+  // Optional static IP (defined in secrets.h): clients point their DNS at this address,
+  // so it must not drift across reboots. Skipped silently when not defined (DHCP).
+  {
+    // STATIC_IP may be a quoted string ("192.168.1.50"); Arduino IPAddress has no
+    // string constructor on all cores, so parse octets manually.
+    #define IP_OCTET(s, i) ((uint8_t)atoi(s))
+    const char* sip = STATIC_IP;
+    const char* sgw = STATIC_GW;
+    const char* smask = STATIC_MASK;
+    uint8_t o1, o2, o3, o4;
+    auto parseIP = [](const char* s, uint8_t* out) {
+      char tmp[16]; strncpy(tmp, s, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = 0;
+      int idx = 0; char* p = tmp;
+      while (*p && idx < 4) { out[idx++] = (uint8_t)atoi(p); while (*p && *p != '.') p++; if (*p) p++; }
+    };
+    uint8_t ipb[4], gwb[4], mb[4];
+    parseIP(sip, ipb); parseIP(sgw, gwb); parseIP(smask, mb);
+    IPAddress lip(ipb), lgw(gwb), lmask(mb);
+    if (!WiFi.config(lip, lgw, lmask)) Serial.println("[setup] static IP config FAILED, falling back to DHCP");
+  }
+#endif
+  WiFi.begin(ssid, pass);
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) { delay(250); Serial.print("."); }
   Serial.println();
@@ -535,7 +702,7 @@ static void handleWifiSave() {
   prefs.begin("wifi", false); prefs.putString("ssid", ss); prefs.putString("pass", pw); prefs.end();
   web.send(200, "text/html", "<!doctype html><meta charset=utf-8><body style='font:16px system-ui;text-align:center;margin-top:60px'>"
                              "&#9989; Saved. Restarting and joining <b>" + htmlEscape(ss) + "</b>&hellip;<br><br>"
-                             "Reconnect your phone to your normal WiFi, then find the box at <b>c3adblock.local</b>.</body>");
+                             "Reconnect your phone to your normal WiFi, then find the box at <b>adblocker.local</b>.</body>");
   delay(900); ESP.restart();
 }
 // Never returns — blocks in the portal loop until creds are saved (then reboots).
@@ -545,7 +712,7 @@ static void startConfigPortal() {
   for (int i = 0; i < n && i < 15; i++) portalOpts += "<option value='" + htmlEscape(WiFi.SSID(i)) + "'>";
   uint8_t mac[6]; WiFi.macAddress(mac);
   char ap[24]; snprintf(ap, sizeof(ap), "C3-AdBlock-%02X%02X", mac[4], mac[5]);
-  WiFi.mode(WIFI_AP); WiFi.softAP(ap);
+  WiFi.mode(WIFI_AP); WiFi.softAP(ap, AP_PORTAL_PASS);
   IPAddress apIP = WiFi.softAPIP();
   dnsPortal.start(53, "*", apIP);              // catch-all -> phones pop the captive portal
   web.on("/", handlePortalRoot);
@@ -573,10 +740,22 @@ void setup() {
   if (blocklist) {
     numHashes = blocklist.size() / HASH_BYTES;
     Serial.printf("blocklist: %u domains\n", numHashes);
+    // Debug: ilk 5 hash'i ve index uçlarını yaz
+    uint8_t dbg[5];
+    blocklist.seek(0); blocklist.read(dbg, 5);
+    Serial.printf("  first hash: %02x%02x%02x%02x%02x\n", dbg[0],dbg[1],dbg[2],dbg[3],dbg[4]);
+    blocklist.seek((numHashes-1)*HASH_BYTES); blocklist.read(dbg, 5);
+    Serial.printf("  last hash : %02x%02x%02x%02x%02x\n", dbg[0],dbg[1],dbg[2],dbg[3],dbg[4]);
+    // doubleclick.net hash'ini ara
+    extern uint64_t fnv40pub(const char*, size_t);
+    uint64_t h = fnv40pub("doubleclick.net", 15);
+    Serial.printf("  doubleclick hash: %010llx\n", h);
+    Serial.printf("  inFlash(doubleclick): %d\n", inFlash(h));
     buildFlashIndex();
+    Serial.printf("  after index: inFlash(doubleclick): %d\n", inFlash(h));
   }
-  loadCustom(); loadBanned(); loadUpdateCfg();
-  Serial.printf("custom: %d, banned: %d\n", numCustom, numBanned);
+  loadCustom(); loadBanned(); loadLabels(); loadUpdateCfg();
+  Serial.printf("custom: %d, banned: %d, labels: %d\n", numCustom, numBanned, numLabels);
 
   // Hold BOOT at power-on to wipe saved WiFi and force the setup portal.
 #if CONFIG_IDF_TARGET_ESP32C3
@@ -591,7 +770,8 @@ void setup() {
 
   if (!connectWiFi()) startConfigPortal();   // portal blocks + reboots on save; returns only when connected
   Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
-  if (MDNS.begin("c3adblock")) { MDNS.addService("http", "tcp", 80); Serial.println("dashboard: http://c3adblock.local"); }
+  if (MDNS.begin("adblocker")) { MDNS.addService("http", "tcp", 80); Serial.println("dashboard: http://adblocker.local"); }
+  mdnsBegin();   // reverse-lookup socket for client hostnames (independent of MDNS's 5353)
 
   if (strcmp(WEB_PASS, "CHANGE_ME_WEB_PASSWORD") == 0 || strcmp(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") == 0)
     Serial.println("[WARN] secrets.h still has placeholder WEB_PASS/OTA_PASS — those are public "
@@ -603,6 +783,40 @@ void setup() {
   web.on("/", []() { web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
   web.on("/ban", handleBan);
+  // ---- OTA diagnostics (auth'd) ----
+  web.on("/otainfo", []() {
+    if (!requireAuth()) return;
+    const esp_partition_t* run = esp_ota_get_running_partition();
+    const esp_partition_t* nxt = esp_ota_get_next_update_partition(nullptr);
+    String j = "{\"running\":\"" + String(run ? run->label : "?") + "\",\"target\":\"" + String(nxt ? nxt->label : "?") + "\"}";
+    web.send(200, "application/json", j);
+  });
+  web.on("/flashmd5", []() {                 // ?a=0xADDR&n=BYTES — md5 of a flash range
+    if (!requireAuth()) return;
+    uint32_t addr = strtol(web.arg("a").c_str(), nullptr, 0);
+    uint32_t len = strtoul(web.arg("n").c_str(), nullptr, 0);
+    if (!len || len > 4UL * 1024 * 1024 || addr + len > 4UL * 1024 * 1024) { web.send(400, "text/plain", "bad range"); return; }
+    MD5Builder md5; md5.begin();
+    static uint8_t chunk[4096];
+    for (uint32_t off = 0; off < len; off += sizeof(chunk)) {
+      uint32_t n = (len - off > sizeof(chunk)) ? sizeof(chunk) : (len - off);
+      if (!ESP.flashRead(addr + off, (uint32_t*)chunk, (n + 3) & ~3u)) { web.send(500, "text/plain", "read fail"); return; }
+      md5.add(chunk, n);
+      yield();
+    }
+    md5.calculate();
+    web.send(200, "text/plain", md5.toString());
+  });
+  web.on("/label", []() {                    // /label?mac=aa:bb:..&n=name (n empty = clear)
+    if (!requireAuth()) return;
+    String mac = web.arg("mac"), n = web.arg("n"); mac.trim(); mac.toLowerCase(); n.trim();
+    if (n.length() > 32) n = n.substring(0, 32);
+    if (mac.length() == 17) {
+      setLabel(mac, n);
+      for (int i = 0; i < numClients; i++) if (macStr(clients[i].mac) == mac) { clients[i].label = n; break; }
+    }
+    web.send(200, "text/plain", "ok");
+  });
   web.on("/addblock", []() { if (!requireAuth()) return; addCustom(web.arg("d")); web.send(200, "text/plain", "ok"); });
   web.on("/unblock", []() { if (!requireAuth()) return; removeCustom(web.arg("d")); web.send(200, "text/plain", "ok"); });
   web.on("/pause", []() {                    // /pause?s=300  (0 or absent = indefinite)
@@ -624,9 +838,11 @@ void setup() {
     saveUpdateCfg(); web.send(200, "text/plain", "ok");
   });
   web.begin();
-  ArduinoOTA.setHostname("c3adblock");   // pio run -t upload --upload-port c3adblock.local
+  ArduinoOTA.setHostname("adblocker");   // pio run -t upload --upload-port adblocker.local
   ArduinoOTA.setPassword(OTA_PASS);      // network OTA was unauthenticated upstream
   ArduinoOTA.begin();
+  lcdInit();
+  lcdUpdate(totalBlocked, totalAllowed, numHashes, WiFi.RSSI());
   Serial.println("DNS :53 + dashboard :80 + OTA up");
 }
 
@@ -634,11 +850,18 @@ void loop() {
   ArduinoOTA.handle();
   web.handleClient();
   bool busy = handleDns();
+  mdnsTick();                             // async PTR lookups for client hostnames
   if (!blockingOn && resumeAt && (int32_t)(millis() - resumeAt) >= 0) { blockingOn = true; resumeAt = 0; }
   if (updateUrl.length()) {               // periodic remote blocklist auto-update
     uint32_t now = millis();
     if (lastCheckMs == 0) lastCheckMs = now;   // skip an immediate fetch on boot
     else if (now - lastCheckMs >= updateIntervalH * 3600000UL) { lastCheckMs = now; fetchBlocklist(updateUrl); }
+  }
+  lcdButtonPoll();                        // BOOT press wakes the screen
+  static uint32_t lastLcd = 0;
+  if (millis() - lastLcd > 1000) {        // 1 Hz — only when a value changed does SPI fire
+    lastLcd = millis();
+    lcdUpdate(totalBlocked, totalAllowed, numHashes, WiFi.RSSI());
   }
   if (!busy) delay(1);   // sleep only when idle: full speed under load, cool when quiet
 }
