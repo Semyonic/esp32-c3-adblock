@@ -292,6 +292,8 @@ static void handleStats() {
   DnsStats ds = dnsStats();
   String j; j.reserve(512 + numClients * 170 + numCustom * 48);   // one allocation, not ~700 reallocs
   j += "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + ds.blocked + ",\"allowed\":" + ds.allowed + ",\"chits\":" + ds.cacheHits +
+             ",\"dot\":" + (ds.dotUp ? "true" : "false") + ",\"dotq\":" + ds.dotQueries +
+             ",\"doths\":" + ds.dotHandshakes + ",\"dothsms\":" + ds.dotHsMs +
              ",\"domains\":" + dnsBlocklistCount() + ",\"rssi\":" + WiFi.RSSI() + ",\"temp\":" + String(temperatureRead(), 1) +
              ",\"heap\":" + ESP.getFreeHeap() + ",\"psram\":" + ESP.getFreePsram() + ",\"uptime\":\"" + ut + "\"" +
              ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +

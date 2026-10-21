@@ -25,5 +25,9 @@ void     dnsSetBlocking(bool on);
 struct DnsEvent { uint32_t ip; uint8_t blocked; };
 bool     dnsPollEvent(DnsEvent* e);          // drain from loop(): per-client counters
 
-struct DnsStats { uint32_t blocked, allowed, cacheHits, upstreamLost, prefetches; };
+struct DnsStats {
+  uint32_t blocked, allowed, cacheHits, upstreamLost, prefetches;
+  uint32_t dotQueries, dotHandshakes, dotHsMs;   // queries sent encrypted; TLS link cost
+  bool dotUp;
+};
 DnsStats dnsStats();

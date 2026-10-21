@@ -7,6 +7,7 @@
 // and a 32-query burst lost 14-28 packets there. The raw callback handles each
 // datagram the moment lwIP parses it — no queue, no task switch, no extra copy.
 #include "dns.h"
+#include "dot.h"
 #include <LittleFS.h>
 #include "lwip/udp.h"
 #include "lwip/tcpip.h"
@@ -190,10 +191,13 @@ static bool isBanned(uint32_t ip) {
 }
 
 // ---------- stats ----------
-static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0;
+static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0;
 static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
-DnsStats dnsStats() { return { stBlocked, stAllowed, stHits, stLost, stPrefetch }; }
+DnsStats dnsStats() {
+  DotStats d = dotStats();
+  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.up };
+}
 
 // ---------- answer cache ----------
 // 4-way set-associative, keyed by (name, qtype, qclass, EDNS). Stored replies keep
@@ -310,11 +314,13 @@ static CacheEnt* cacheFind(uint64_t key, const uint8_t* q, int qend) {
 // lwIP has 16 UDP PCBs in total (DHCP, mDNS, OTA... hold ~6), hence 8 ports; a
 // miss beyond that waits in the queue for the next free port instead of dropping.
 static const int MAX_PEND = 64, PEND_Q = 512, UP_PORTS = 8;
+static const int8_t PORT_WAIT = -1, PORT_DOT = -2;
 struct Pending {
   uint64_t key;
   uint32_t cip, sentMs;          // sentMs = queue time until dispatched, then send time
   uint16_t cport, cid, wid, qlen, qend;                    // cport 0 = prefetch (no client)
-  int8_t port;                   // -1 = waiting for a free port
+  int8_t port;                   // PORT_WAIT: queued for a UDP port; PORT_DOT: in flight over TLS
+  uint8_t gen;                   // bumped on reuse, so a late DoT reply can't land in a new query
   uint8_t tries; bool used;
   uint8_t q[PEND_Q];
 };
@@ -331,13 +337,29 @@ static void dispatch(Pending* p, int port) {
   sendRaw(upPcb[port], p->q, p->qlen, &upAddr[0], UPSTREAM_PORT);
 }
 static void release(Pending* p) {              // free the slot; its port goes to the oldest waiter
-  int port = p->port; p->used = false; p->port = -1;
+  int port = p->port; p->used = false; p->port = PORT_WAIT; p->gen++;
   if (port < 0) return;
   portOwner[port] = nullptr;
   Pending* w = nullptr;
   for (int i = 0; i < MAX_PEND; i++)
-    if (pend[i].used && pend[i].port < 0 && (!w || (int32_t)(pend[i].sentMs - w->sentMs) < 0)) w = &pend[i];
+    if (pend[i].used && pend[i].port == PORT_WAIT && (!w || (int32_t)(pend[i].sentMs - w->sentMs) < 0)) w = &pend[i];
   if (w) dispatch(w, port);
+}
+
+// A reply that came back over TLS, handed to us by the DoT task.
+void dotDeliver(uint16_t slot, uint16_t gen, const uint8_t* reply, int len) {
+  if (slot >= MAX_PEND || len < 12) return;
+  Pending* p = &pend[slot];
+  if (!p->used || p->port != PORT_DOT || p->gen != (uint8_t)gen) return;   // slot already reused
+  if (len < p->qend || memcmp(reply + 12, p->q + 12, p->qend - 12) != 0) return;
+  memcpy(ux, reply, len);
+  cacheStore(p->key, ux, len);
+  if (p->cport) {
+    ux[0] = p->cid >> 8; ux[1] = p->cid;
+    ip_addr_t c = IPADDR4_INIT(p->cip);
+    sendRaw(srvPcb, ux, len, &c, p->cport);
+  }
+  release(p);
 }
 
 // cip is in network order; cport 0 = prefetch (no client to answer)
@@ -346,10 +368,14 @@ static void forward(const uint8_t* q, int qlen, int qend, uint64_t key, uint32_t
   Pending* p = nullptr;
   for (int i = 0; i < MAX_PEND && !p; i++) if (!pend[i].used) p = &pend[i];
   if (!p) { stLost++; return; }                            // 64 already queued: shed load
-  p->used = true; p->port = -1; p->key = key; p->sentMs = nowMs();
+  p->used = true; p->port = PORT_WAIT; p->key = key; p->sentMs = nowMs();
   p->cip = cip; p->cport = cport; p->cid = q[0] << 8 | q[1]; p->qlen = qlen; p->qend = qend;
   memcpy(p->q, q, qlen);
-  for (int i = 0; i < UP_PORTS; i++) if (upPcb[i] && !portOwner[i]) { dispatch(p, i); break; }
+  // Encrypted first: only fall back to plaintext UDP when DoT is actually down, so
+  // a healthy box never puts a name on the wire in the clear.
+  uint16_t slot = p - pend;
+  if (dotReady() && dotSubmit(slot, p->gen, p->q, qlen)) { p->port = PORT_DOT; p->tries = 1; stDot++; }
+  else for (int i = 0; i < UP_PORTS; i++) if (upPcb[i] && !portOwner[i]) { dispatch(p, i); break; }
   armTimer();
 }
 
@@ -415,6 +441,7 @@ static void onClient(int n, const ip_addr_t* from, uint16_t port) {
   uint16_t qtype = 0, qclass = 0; int qend = 0;
   int nl = parseQuestion(rx, n, name, &qtype, &qclass, &qend);
   uint32_t cip = ip4_addr_get_u32(ip_2_ip4(from));
+  dotNoteClient();                                          // keeps the TLS link warm while in use
   bool blocked = isBanned(cip) || (nl > 0 && blocking && nameBlocked(name, nl));
   DnsEvent ev = { cip, blocked }; xQueueSend(evq, &ev, 0);  // full queue: per-client count lost, totals still right
   if (blocked) {
@@ -452,6 +479,10 @@ static void expireTick(void*) {
     Pending* p = &pend[i]; if (!p->used) continue;
     uint32_t age = now - p->sentMs;
     if (age >= GIVEUP_MS) { stLost++; release(p); continue; }   // may dispatch a waiter
+    if (p->port == PORT_DOT && p->tries == 1 && age >= RETRY_MS) {
+      p->tries = 2;                            // TLS link stalled: retry this one over UDP
+      for (int i = 0; i < UP_PORTS; i++) if (upPcb[i] && !portOwner[i]) { dispatch(p, i); break; }
+    }
     if (p->port >= 0 && p->tries == 1 && age >= RETRY_MS) {
       sendRaw(upPcb[p->port], p->q, p->qlen, &upAddr[1], UPSTREAM_PORT); p->tries = 2;
     }
@@ -483,4 +514,7 @@ static void startInTcpip(void* arg) {
   }
 }
 
-void dnsStart(uint16_t port) { tcpip_callback(startInTcpip, (void*)(uintptr_t)port); }
+void dnsStart(uint16_t port) {
+  tcpip_callback(startInTcpip, (void*)(uintptr_t)port);
+  dotInit();
+}
