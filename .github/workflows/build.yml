@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [c3, esp32dev]
+        env: [c3, esp32dev, s3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,6 +25,8 @@ jobs:
       - name: Placeholder secrets (real ones are gitignored; the firmware falls back to the setup portal)
         run: cp src/secrets.example.h src/secrets.h
       - run: pio run -e ${{ matrix.env }}
+      - name: Image fits its 0x150000 OTA slot
+        run: test "$(stat -c%s .pio/build/${{ matrix.env }}/firmware.bin)" -le 1376256
 
   blocklist-tool:
     runs-on: ubuntu-latest

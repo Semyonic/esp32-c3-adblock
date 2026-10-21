@@ -17,8 +17,6 @@
 #include <Preferences.h>       // NVS store for provisioned WiFi creds
 #include "lwip/etharp.h"
 #include "lwip/netif.h"
-#include "MD5Builder.h"   // /flashmd5 diagnostic
-#include <esp_ota_ops.h>  // /otainfo: running/next partition labels
 #include "secrets.h"   // WIFI_SSID / WIFI_PASS — used only as a FALLBACK if no creds
                        // have been provisioned via the captive portal (copy secrets.example.h)
 #include "lcd.h"       // ST7789 status display (Waveshare 1.47 board)
@@ -89,7 +87,6 @@ static uint64_t fnv40(const char* s, size_t n) {
   for (size_t i = 0; i < n; i++) { h ^= (uint8_t)s[i]; h *= 0x100000001b3ULL; }
   return h & HASH_MASK;
 }
-uint64_t fnv40pub(const char* s, size_t n) { return fnv40(s, n); }
 static inline uint64_t unpackHash(const uint8_t* b) {
   uint64_t v = 0;
   for (int k = 0; k < HASH_BYTES; k++) v |= (uint64_t)b[k] << (8 * k);
@@ -207,9 +204,9 @@ static void loadBanned() {
   while (f.available() && numBanned < MAX_BAN) { String l = f.readStringUntil('\n'); l.trim(); IPAddress ip; if (l.length() && ip.fromString(l)) bannedIP[numBanned++] = (uint32_t)ip; }
   f.close();
 }
+// bannedIP[] is the source of truth (rebuilding it from clients[] dropped bans for
+// devices that hadn't queried yet this boot).
 static void saveBanned() {
-  numBanned = 0;
-  for (int i = 0; i < numClients && numBanned < MAX_BAN; i++) if (clients[i].banned) bannedIP[numBanned++] = clients[i].ip;
   File f = LittleFS.open("/banned.txt", "w"); if (!f) return;
   for (int i = 0; i < numBanned; i++) { IPAddress ip(bannedIP[i]); f.println(ip.toString()); }
   f.close();
@@ -435,7 +432,17 @@ static bool handleDns() {
 
 // ---------- web ----------
 static String macStr(const uint8_t* m) { char s[18]; snprintf(s, sizeof(s), "%02x:%02x:%02x:%02x:%02x:%02x", m[0],m[1],m[2],m[3],m[4],m[5]); return String(s); }
-static String jesc(const String& s) { String o; for (char ch : s) { if (ch == '"' || ch == '\\') o += '\\'; o += ch; } return o; }
+// Control chars must be \u-escaped too: mDNS names come from any LAN host, and a
+// raw 0x0A in one would break JSON.parse for the whole dashboard.
+static String jesc(const String& s) {
+  String o; o.reserve(s.length() + 2);
+  for (char ch : s) {
+    if ((uint8_t)ch < 0x20) { char u[7]; snprintf(u, sizeof(u), "\\u%04x", (uint8_t)ch); o += u; continue; }
+    if (ch == '"' || ch == '\\') o += '\\';
+    o += ch;
+  }
+  return o;
+}
 // HTML text/attribute escaping for the setup portal. jesc() covers JSON (stats
 // endpoint); the portal builds HTML, and its inputs — a scanned SSID, the
 // submitted WiFi name — are attacker-controllable during provisioning (the
@@ -462,9 +469,10 @@ static String htmlEscape(const String& s) {
 static void handleStats() {
   uint32_t up = millis() / 1000;
   char ut[24]; snprintf(ut, sizeof(ut), "%lud %luh %lum", up/86400, (up%86400)/3600, (up%3600)/60);
-  String j = "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + totalBlocked + ",\"allowed\":" + totalAllowed +
+  String j; j.reserve(512 + numClients * 170 + numCustom * 48);   // one allocation, not ~700 reallocs
+  j += "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + totalBlocked + ",\"allowed\":" + totalAllowed +
              ",\"domains\":" + numHashes + ",\"rssi\":" + WiFi.RSSI() + ",\"temp\":" + String(temperatureRead(), 1) +
-             ",\"heap\":" + ESP.getFreeHeap() + ",\"uptime\":\"" + ut + "\"" +
+             ",\"heap\":" + ESP.getFreeHeap() + ",\"psram\":" + ESP.getFreePsram() + ",\"uptime\":\"" + ut + "\"" +
              ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
@@ -502,7 +510,15 @@ static bool requireAuth() {
 }
 static void handleBan() {
   if (!requireAuth()) return;
-  IPAddress ip; if (ip.fromString(web.arg("ip"))) { Dev* c = getClient((uint32_t)ip); if (c) { c->banned = !c->banned; saveBanned(); } }
+  IPAddress ip;
+  if (ip.fromString(web.arg("ip"))) {
+    uint32_t a = (uint32_t)ip; int i = 0;
+    while (i < numBanned && bannedIP[i] != a) i++;
+    if (i < numBanned) bannedIP[i] = bannedIP[--numBanned];          // unban
+    else if (numBanned < MAX_BAN) bannedIP[numBanned++] = a;         // ban
+    saveBanned();
+    Dev* c = getClient(a); if (c) c->banned = isBannedIP(a);
+  }
   web.send(200, "text/plain", "ok");
 }
 
@@ -740,19 +756,7 @@ void setup() {
   if (blocklist) {
     numHashes = blocklist.size() / HASH_BYTES;
     Serial.printf("blocklist: %u domains\n", numHashes);
-    // Debug: ilk 5 hash'i ve index uçlarını yaz
-    uint8_t dbg[5];
-    blocklist.seek(0); blocklist.read(dbg, 5);
-    Serial.printf("  first hash: %02x%02x%02x%02x%02x\n", dbg[0],dbg[1],dbg[2],dbg[3],dbg[4]);
-    blocklist.seek((numHashes-1)*HASH_BYTES); blocklist.read(dbg, 5);
-    Serial.printf("  last hash : %02x%02x%02x%02x%02x\n", dbg[0],dbg[1],dbg[2],dbg[3],dbg[4]);
-    // doubleclick.net hash'ini ara
-    extern uint64_t fnv40pub(const char*, size_t);
-    uint64_t h = fnv40pub("doubleclick.net", 15);
-    Serial.printf("  doubleclick hash: %010llx\n", h);
-    Serial.printf("  inFlash(doubleclick): %d\n", inFlash(h));
     buildFlashIndex();
-    Serial.printf("  after index: inFlash(doubleclick): %d\n", inFlash(h));
   }
   loadCustom(); loadBanned(); loadLabels(); loadUpdateCfg();
   Serial.printf("custom: %d, banned: %d, labels: %d\n", numCustom, numBanned, numLabels);
@@ -783,30 +787,6 @@ void setup() {
   web.on("/", []() { web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
   web.on("/ban", handleBan);
-  // ---- OTA diagnostics (auth'd) ----
-  web.on("/otainfo", []() {
-    if (!requireAuth()) return;
-    const esp_partition_t* run = esp_ota_get_running_partition();
-    const esp_partition_t* nxt = esp_ota_get_next_update_partition(nullptr);
-    String j = "{\"running\":\"" + String(run ? run->label : "?") + "\",\"target\":\"" + String(nxt ? nxt->label : "?") + "\"}";
-    web.send(200, "application/json", j);
-  });
-  web.on("/flashmd5", []() {                 // ?a=0xADDR&n=BYTES — md5 of a flash range
-    if (!requireAuth()) return;
-    uint32_t addr = strtol(web.arg("a").c_str(), nullptr, 0);
-    uint32_t len = strtoul(web.arg("n").c_str(), nullptr, 0);
-    if (!len || len > 4UL * 1024 * 1024 || addr + len > 4UL * 1024 * 1024) { web.send(400, "text/plain", "bad range"); return; }
-    MD5Builder md5; md5.begin();
-    static uint8_t chunk[4096];
-    for (uint32_t off = 0; off < len; off += sizeof(chunk)) {
-      uint32_t n = (len - off > sizeof(chunk)) ? sizeof(chunk) : (len - off);
-      if (!ESP.flashRead(addr + off, (uint32_t*)chunk, (n + 3) & ~3u)) { web.send(500, "text/plain", "read fail"); return; }
-      md5.add(chunk, n);
-      yield();
-    }
-    md5.calculate();
-    web.send(200, "text/plain", md5.toString());
-  });
   web.on("/label", []() {                    // /label?mac=aa:bb:..&n=name (n empty = clear)
     if (!requireAuth()) return;
     String mac = web.arg("mac"), n = web.arg("n"); mac.trim(); mac.toLowerCase(); n.trim();
@@ -822,6 +802,7 @@ void setup() {
   web.on("/pause", []() {                    // /pause?s=300  (0 or absent = indefinite)
     if (!requireAuth()) return;
     long s = web.hasArg("s") ? web.arg("s").toInt() : 0;
+    if (s > 7L * 86400) s = 7L * 86400;      // keeps s*1000 inside uint32 millis
     blockingOn = false; resumeAt = (s > 0) ? millis() + (uint32_t)s * 1000UL : 0;
     web.send(200, "text/plain", "paused");
   });
@@ -834,7 +815,7 @@ void setup() {
   web.on("/setupdate", []() {
     if (!requireAuth()) return;
     if (web.hasArg("u")) updateUrl = web.arg("u");
-    if (web.hasArg("h")) { updateIntervalH = web.arg("h").toInt(); if (updateIntervalH < 1) updateIntervalH = 1; }
+    if (web.hasArg("h")) { long h = web.arg("h").toInt(); updateIntervalH = h < 1 ? 1 : h > 720 ? 720 : h; }
     saveUpdateCfg(); web.send(200, "text/plain", "ok");
   });
   web.begin();
