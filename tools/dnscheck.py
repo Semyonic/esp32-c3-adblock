@@ -113,11 +113,17 @@ def main():
     a, _ = ask(dev, 'dnssec-failed.org', 1)
     check('served-fail domain still answered', a is not None)
 
-    big = ask(dev, 'ns1.google.com', 16, edns=4096)[0]
-    ref_big = ask(ref, 'ns1.google.com', 16, edns=4096)[0]
+    # google.com TXT answers ~1.2 kB: past the 512 B that a non-EDNS resolver may
+    # send, and past one Ethernet frame, so it proves large replies survive the
+    # copy. TXT rdata holds no compression pointers, so it compares byte for byte.
+    big = ask(dev, 'google.com', 16, edns=4096)[0]
+    ref_big = ask(ref, 'google.com', 16, edns=4096)[0]
     if big and ref_big:
-        check('reply over 512 B relayed whole', len(big) == len(ref_big),
-              f'{len(big)} B vs {len(ref_big)} B')
+        check('reply over 512 B relayed whole',
+              len(big) > 512 and not (big[2] & 0x02) and
+              sorted(r[2] for r in records(big) if r[0] == 16) ==
+              sorted(r[2] for r in records(ref_big) if r[0] == 16),
+              f'{len(big)} B, TC {bool(big[2] & 0x02)}')
 
     print('cache behaviour')
     name = 'www.wikipedia.org'

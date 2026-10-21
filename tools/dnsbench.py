@@ -98,4 +98,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (BrokenPipeError, KeyboardInterrupt):   # piping into head, or ^C mid-run
+        pass
