@@ -245,10 +245,20 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
   lost at any of those rates; a reconnect costs ~1.6 s (software ECDSA P-384) and
   queries take the plaintext path meanwhile. A household resolves a few names a
   second, so the link simply stays up.
-- Load-test from a **bounded pool of sockets**. Spawning a thread per query makes
-  the *test machine* drop answers — one sweep showed 10,049 "losses" at 140 q/s
-  that vanished (0 lost, and the device's own counters agreed) when the same rate
-  was driven from eight reused workers.
+- **The ceiling is the radio, not the firmware.** Self-paced load, measured with
+  the device's own counters: 8 queries in flight → 69 q/s, 16 → 102 q/s, 32 →
+  116 q/s, all with no loss at all. At 64 in flight throughput *falls* to 87 q/s
+  and the client misses 304 of 4,160 — but the firmware's internal loss counter
+  stays at 0 and it only ever received 3,872, so those packets were dropped by
+  the WiFi receive path before any of this code saw them (the RX buffer counts
+  live in the prebuilt IDF libs). A household asks a few names a second, so this
+  is a synthetic-load ceiling, not an operating limit.
+- Drive load from a **bounded pool** that waits for each answer. A thread per
+  query arrives in clumps far above the nominal rate and runs into that same
+  ceiling: one sweep reported 10,049 "losses" at 140 q/s. Blaming the test
+  machine was wrong — the same harness delivered 8,400 queries to a public
+  resolver with none lost. Compare client-sent against the device's received
+  count before concluding anything.
 
 ## Done / how it could grow
 
