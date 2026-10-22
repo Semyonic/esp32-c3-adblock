@@ -147,6 +147,52 @@ def main():
         except socket.timeout:
             check('question echoed byte for byte (0x20)', False, 'no reply')
 
+    # The wire parser is the same code on every target, so a packet that can crash
+    # it crashes all of them. Nothing here should be answered *correctly* — the
+    # requirement is that the device survives and keeps serving afterwards.
+    print('malformed and hostile input')
+    hdr = struct.pack('>HHHHHH', 0x4242, 0x0100, 1, 0, 0, 0)
+    hostile = {
+        'empty packet': b'',
+        'header only': hdr,
+        'truncated header': b'\x42\x42\x01',
+        'qdcount 0': struct.pack('>HHHHHH', 1, 0x0100, 0, 0, 0, 0),
+        'qdcount 5, one question': struct.pack('>HHHHHH', 2, 0x0100, 5, 0, 0, 0) + b'\x03abc\x03com\0\0\1\0\1',
+        'label runs past the end': hdr + b'\x3fabc\0\0\1\0\1',
+        'label length 64 (illegal)': hdr + bytes([64]) + b'a' * 64 + b'\0\0\1\0\1',
+        'name with no terminator': hdr + (b'\x03abc' * 60),
+        'compression pointer in question': hdr + b'\xc0\x0c\0\1\0\1',
+        'pointer loop': hdr + b'\xc0\x0e\xc0\x0c\0\1\0\1',
+        'name just over 255 bytes': hdr + (b'\x3f' + b'a' * 63) * 4 + b'\0\0\1\0\1',
+        'question but no type/class': hdr + b'\x03abc\x03com\0',
+        'response bit set (not a query)': struct.pack('>HHHHHH', 3, 0x8180, 1, 0, 0, 0) + b'\x03abc\x03com\0\0\1\0\1',
+        'edns rdlen lies': hdr[:10] + b'\0\1' + b'\x03abc\x03com\0\0\1\0\1' + b'\0' + struct.pack('>HHIH', 41, 1232, 0, 4000),
+        'random 512 bytes': bytes(random.randrange(256) for _ in range(512)),
+        'random 1472 bytes': bytes(random.randrange(256) for _ in range(1472)),
+    }
+    for label, pkt in hostile.items():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(1.5)
+            try:
+                s.sendto(pkt, (dev, 53))
+                s.recv(4096)
+            except (socket.timeout, OSError):
+                pass                                        # ignoring it is a valid answer
+    for _ in range(300):                                    # a flood of garbage, then is it alive?
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            n = random.randrange(1, 600)
+            try:
+                s.sendto(bytes(random.randrange(256) for _ in range(n)), (dev, 53))
+            except OSError:
+                pass
+    time.sleep(1)
+    a, _ = ask(dev, 'example.com')
+    check(f'survives {len(hostile)} malformed packets + 300 random ones',
+          a is not None and (a[3] & 15) == 0, 'still answering normally')
+    a, _ = ask(dev, 'googlesyndication.com')
+    check('still filtering after the flood',
+          a is not None and any(r[2] == b'\0\0\0\0' for r in records(a) if r[0] == 1))
+
     print('filtering')
     a, _ = ask(dev, 'googlesyndication.com')
     check('listed domain sinkholed', a is not None and any(r[2] == b'\0\0\0\0' for r in records(a) if r[0] == 1))
