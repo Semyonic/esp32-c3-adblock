@@ -89,6 +89,12 @@ static NetworkClientSecure cli;
 static uint8_t rbuf[2 + 1536];
 static int rlen = 0;                           // bytes of the current framed reply held in rbuf
 
+// Who ended the link: set before every cli.stop() we initiate, so the log can tell
+// our own faults apart from the peer hanging up (a resolver rate-limiting a busy
+// connection looks identical otherwise).
+static const char* stopReason = nullptr;
+static void closeLink(const char* why) { stopReason = why; cli.stop(); }
+
 static bool connectDot() {
   static const uint8_t a1[] = {DOT_IP}, a2[] = {DOT_IP2};
   const bool alt = (stF & 1);                  // alternate servers across retries
@@ -96,6 +102,7 @@ static bool connectDot() {
   cli.setHandshakeTimeout(12);
   cli.setTimeout(5);
   uint32_t t0 = nowMs();
+  stopReason = nullptr;
   if (!cli.connect(ip, 853, DOT_HOST, DOT_ROOT_CA, nullptr, nullptr)) { cli.stop(); return false; }
   cli.setNoDelay(true);
   stHsMs = nowMs() - t0; stHs++;
@@ -111,7 +118,7 @@ static int drainReplies() {
     int want = rlen < 2 ? 2 : 2 + ((rbuf[0] << 8) | rbuf[1]);
     // A frame that can't hold a DNS header means the stream is out of step (or the
     // peer is broken); without this the parser would sit on it forever.
-    if (want > (int)sizeof(rbuf) || (rlen >= 2 && want < 2 + 12)) { cli.stop(); return got; }
+    if (want > (int)sizeof(rbuf) || (rlen >= 2 && want < 2 + 12)) { closeLink("bad frame length"); return got; }
     if (!cli.available()) return got;
     int n = cli.read(rbuf + rlen, want - rlen);
     if (n <= 0) return got;
@@ -155,7 +162,7 @@ static bool sendQuery(DotReq& r) {
   while (off < total) {
     int w = cli.write(frame + off, total - off);
     if (w > 0) { off += w; continue; }
-    if (!cli.connected() || nowMs() > deadline) { cli.stop(); return false; }
+    if (!cli.connected() || nowMs() > deadline) { closeLink("send stalled"); return false; }
     vTaskDelay(1);
   }
   stQ++;
@@ -168,7 +175,17 @@ static void dotTask(void*) {
   for (;;) {
     bool warm = nowMs() - lastClientMs < WARM_MS;
     if (!cli.connected()) {
-      if (up) { up = false; Serial.println("[dot] link closed"); }
+      if (up) {
+        up = false;
+        // Reconnecting costs ~1.6 s here (software ECDSA P-384), far longer than
+        // the engine's 350 ms fallback timer, so every query in that window ends
+        // up on UDP regardless. Saying so immediately removes the 350 ms each of
+        // them would otherwise wait first; the privacy outcome is unchanged.
+        linkDown = true;
+        if (stopReason) Serial.printf("[dot] link closed by us: %s\n", stopReason);
+        else Serial.println("[dot] link closed by the resolver");
+        stopReason = nullptr;
+      }
       bool backoff = fails >= MAX_FAILS && nowMs() - failedAt < BACKOFF_MS;
       if (WiFi.status() == WL_CONNECTED && warm && !backoff) {
         if (connectDot()) { up = true; linkDown = false; fails = 0; lastSend = nowMs(); }
@@ -202,7 +219,7 @@ static void dotTask(void*) {
 
     if (nowMs() - lastSend > KEEPALIVE_MS) {
       if (warm) { sendKeepalive(); lastSend = nowMs(); }
-      else { cli.stop(); }                     // nobody is using DNS: let it go, reconnect on demand
+      else { closeLink(nullptr); }             // nobody is using DNS: let it go, reconnect on demand
     }
   }
 }

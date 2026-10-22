@@ -455,7 +455,7 @@ static CacheEnt* cacheFind(uint64_t key, const uint8_t* q, int qend) {
 #ifdef BOARD_HAS_PSRAM
 static const int MAX_PEND = 64, PEND_Q = 512, UP_PORTS = 8;
 #else
-static const int MAX_PEND = 16, PEND_Q = 320, UP_PORTS = 6;
+static const int MAX_PEND = 32, PEND_Q = 320, UP_PORTS = 6;   // 16 shed half of a 32-query burst
 #endif
 static const int8_t PORT_WAIT = -1, PORT_DOT = -2;
 struct Pending {

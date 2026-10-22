@@ -406,15 +406,19 @@ static void handleUpload() {
 }
 
 // ---------- remote blocklist auto-update ----------
+// Third line is the last fetch result. Without it the dashboard said "never" after
+// every reboot, which reads as "auto-update has never run" — the exact thing you
+// check when you suspect it is broken.
 static void loadUpdateCfg() {
   File f = LittleFS.open("/update.cfg", "r"); if (!f) return;
   updateUrl = f.readStringUntil('\n'); updateUrl.trim();
   String iv = f.readStringUntil('\n'); iv.trim(); if (iv.length()) updateIntervalH = iv.toInt();
+  String st = f.readStringUntil('\n'); st.trim(); if (st.length()) updateStatus = st;
   f.close(); if (updateIntervalH < 1) updateIntervalH = 1;
 }
 static void saveUpdateCfg() {
   File f = LittleFS.open("/update.cfg", "w"); if (!f) return;
-  f.println(updateUrl); f.println(updateIntervalH); f.close();
+  f.println(updateUrl); f.println(updateIntervalH); f.println(updateStatus); f.close();
 }
 // A .bin URL is a prebuilt hash blob and goes to flash; anything else is treated as
 // a text source (hosts / AdGuard syntax) and is hashed straight into PSRAM as it
@@ -481,6 +485,7 @@ static bool fetchBlocklist(String urls) {
                       : ("bad data (" + String(total) + "B)");
   }
   Serial.printf("[remote] %s\n", updateStatus.c_str());
+  saveUpdateCfg();                                 // remember the result across a reboot
   return ok;
 }
 
