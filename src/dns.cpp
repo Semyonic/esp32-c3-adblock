@@ -341,14 +341,17 @@ static bool isBanned(uint32_t ip) {
 }
 
 // ---------- stats ----------
-static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0;
+// Loss is split by cause: stTimeout is a query the resolver never answered,
+// stShed is one this device refused because its own table was full. They call
+// for different responses, so the dashboard shows them apart.
+static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stTimeout = 0, stShed = 0, stPrefetch = 0, stDot = 0;
 static volatile uint32_t stTxFailReply = 0, stTxFailQuery = 0;
 static volatile int32_t  stTxErrReply = 0, stTxErrQuery = 0;   // last reason, see sendRaw
 static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
 DnsStats dnsStats() {
   DotStats d = dotStats();
-  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFailReply, stTxFailQuery, stTxErrReply, stTxErrQuery, d.up };
+  return { stBlocked, stAllowed, stHits, stTimeout + stShed, stPrefetch, stTimeout, stShed, stDot, d.handshakes, d.hsMs, d.dropped, stTxFailReply, stTxFailQuery, stTxErrReply, stTxErrQuery, d.up };
 }
 
 // ---------- answer cache ----------
@@ -511,10 +514,10 @@ void dotDeliver(uint16_t slot, uint16_t gen, const uint8_t* reply, int len) {
 
 // cip is in network order; cport 0 = prefetch (no client to answer)
 static void forward(const uint8_t* q, int qlen, int qend, uint64_t key, uint32_t cip, uint16_t cport) {
-  if (qlen > PEND_Q) { stLost++; return; }                 // no real stub sends a >512 B query
+  if (qlen > PEND_Q) { stShed++; return; }                 // no real stub sends a >512 B query
   Pending* p = nullptr;
   for (int i = 0; i < MAX_PEND && !p; i++) if (!pend[i].used) p = &pend[i];
-  if (!p) { stLost++; return; }                            // 64 already queued: shed load
+  if (!p) { stShed++; return; }                            // 64 already queued: shed load
   p->used = true; p->port = PORT_WAIT; p->key = key; p->sentMs = nowMs();
   p->cip = cip; p->cport = cport; p->cid = q[0] << 8 | q[1]; p->qlen = qlen; p->qend = qend;
   memcpy(p->q, q, qlen);
@@ -607,7 +610,7 @@ static void expireTick(void*) {
   for (int i = 0; i < MAX_PEND; i++) {
     Pending* p = &pend[i]; if (!p->used) continue;
     uint32_t age = now - p->sentMs;
-    if (age >= GIVEUP_MS) { stLost++; release(p); continue; }   // may dispatch a waiter
+    if (age >= GIVEUP_MS) { stTimeout++; release(p); continue; }   // may dispatch a waiter
     if (p->port == PORT_DOT && p->tries == 1 && age >= RETRY_MS) {
       // TLS is taking too long: move this query to the plaintext path. It has to
       // join the waiting list when every port is busy -- leaving it marked PORT_DOT

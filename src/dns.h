@@ -57,6 +57,10 @@ bool     dnsPollEvent(DnsEvent* e);          // drain from loop(): per-client co
 
 struct DnsStats {
   uint32_t blocked, allowed, cacheHits, upstreamLost, prefetches;
+  // upstreamLost is the sum of these two, which mean different things: a query
+  // the resolver never answered (it may have been nonsense in the first place),
+  // and one this device turned away because its own table was full.
+  uint32_t lostTimeout, lostShed;
   uint32_t dotQueries, dotHandshakes, dotHsMs;   // queries sent encrypted; TLS link cost
   uint32_t dotDropped;                           // replies that found no free hand-off slot
   uint32_t txFailedReply, txFailedQuery;         // packets lwIP would not send, by direction
