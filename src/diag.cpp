@@ -102,7 +102,7 @@ static bool tlsProbe(uint32_t ip, const char* name, uint16_t* ms, char* err, siz
     char buf[80] = {0};
     int e = c.lastError(buf, sizeof(buf) - 1);
     if (e > 0) { strncpy(err, buf, errcap - 1); err[errcap - 1] = 0; }
-    else snprintf(err, errcap, "connect failed");
+    else snprintf(err, errcap, "TLS bağlantısı kurulamadı");
   }
   c.stop();
   return ok;
@@ -152,16 +152,22 @@ static void runTest(const char* domain, DiagResult* r) {
   } else if (!trusted) {
     strcpy(r->verdict, "nodata");
     snprintf(r->note, sizeof(r->note), "A kaydı yok (rcode %u); TCP testi atlandı.", (unsigned)trc);
-  } else if (r->poisoned) {
-    strcpy(r->verdict, "dns");
-    snprintf(r->note, sizeof(r->note), "ISP DNS farklı yanıt verdi (rcode %u/%u); CDN veya zehirleme olabilir.",
-             (unsigned)ispRc, (unsigned)trc);
   } else if (!r->tcpOk) {
     strcpy(r->verdict, "ip");
-    strcpy(r->note, "TCP 443 açılmadı; IP engeli veya yol yok.");
+    if (r->poisoned) strcpy(r->note, "DNS zehirlemesi + IP engeli; TCP 443 açılmadı.");
+    else             strcpy(r->note, "TCP 443 açılmadı; IP engeli veya yol yok.");
   } else if (!r->tlsOk) {
-    strcpy(r->verdict, "sni");
-    strcpy(r->note, "TCP açıldı, TLS düştü; SNI/DPI engeli olabilir.");
+    if (r->poisoned) {
+      strcpy(r->verdict, "dns+sni");
+      strcpy(r->note, "DNS zehirlemesi + SNI/DPI engeli; DNS tek başına yetmez.");
+    } else {
+      strcpy(r->verdict, "sni");
+      strcpy(r->note, "TCP açıldı, TLS düştü; SNI/DPI engeli.");
+    }
+  } else if (r->poisoned) {
+    strcpy(r->verdict, "dns");
+    snprintf(r->note, sizeof(r->note), "ISP DNS farklı (rcode %u/%u); TLS geçti, CDN veya DNS zehirlemesi olabilir.",
+             (unsigned)ispRc, (unsigned)trc);
   } else {
     strcpy(r->verdict, "clean");
     strcpy(r->note, "DNS, TCP 443 ve TLS SNI temiz.");

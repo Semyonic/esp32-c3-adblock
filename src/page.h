@@ -316,7 +316,7 @@ async function diagPoll(){
 }
 function renderDiag(j){
  if(j.state!='done'){dgres.textContent=j.note||'test tamamlanamadı';return}
- const v={dns:'DNS yanıtı farklı',ip:'IP engeli',sni:'SNI/DPI engeli',clean:'temiz',local:'yerel blok',nodata:'A kaydı yok',error:'hata'}[j.verdict]||j.verdict;
+ const v={dns:'DNS yanıtı farklı',ip:'IP engeli',sni:'SNI/DPI engeli','dns+sni':'DNS + SNI/DPI engeli',clean:'temiz',local:'yerel blok',nodata:'A kaydı yok',error:'hata'}[j.verdict]||j.verdict;
  const ip=x=>x&&x!='0.0.0.0'?x:'—';
  dgres.innerHTML='<b>'+esc(j.domain)+'</b> · '+esc(v)+'<br>'+
   'ISP DNS: '+esc(ip(j.isp))+' · DoT: '+esc(ip(j.trusted))+(j.dot?' (şifreli)':' (düz)')+'<br>'+
