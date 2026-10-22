@@ -89,6 +89,15 @@ Where a nonzero internal count does appear over a long mixed lifetime (10 in
 answered inside 1.5 s; the reference resolver drops a comparable share when
 queried directly.
 
+### The `lost` counter moves during dnscheck, and that is correct
+
+`tools/dnscheck.py` ends with 16 hand-written malformed packets and 300 random
+ones. The device forwards what parses as a question; the resolver never answers
+garbage, so each one ages out and is counted. Measured on 2026-10-22, one run:
+`lost` 12 -> 27 across the suite (all 20 checks still passed), then **27 -> 27**
+over 200 ordinary queries immediately afterwards. So the rise is the fuzz phase,
+not loss of real traffic.
+
 ## Capacity — the ceiling is the radio
 
 Self-paced load, N queries in flight:
