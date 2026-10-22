@@ -1,0 +1,246 @@
+// Host tests for src/wire.h — the parsing and matching logic the firmware shares
+// across every target. Build and run anywhere:
+//
+//   c++ -std=c++17 -I src -o /tmp/test_wire tools/test_wire.cpp && /tmp/test_wire
+//
+// These cover what is awkward to produce against a real device: names at the
+// 255-byte limit, label lengths the format forbids, compression pointers and
+// loops, record counts that lie about what follows, TTL boundaries, and every
+// blocklist line syntax. One copy of the code, so one run covers all targets.
+#include "wire.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+static int failures = 0;
+static void check(bool ok, const char* what) {
+  printf("  %s  %s\n", ok ? "PASS" : "FAIL", what);
+  if (!ok) failures++;
+}
+
+// A query packet: header, one question, optional trailing bytes.
+static std::vector<uint8_t> query(const std::string& name, uint16_t qtype = 1,
+                                  uint16_t qdcount = 1) {
+  std::vector<uint8_t> p = {0x12, 0x34, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0, 0};
+  p[4] = (uint8_t)(qdcount >> 8); p[5] = (uint8_t)(qdcount & 0xFF);
+  size_t start = 0;
+  while (start <= name.size()) {
+    size_t dot = name.find('.', start);
+    std::string label = name.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+    p.push_back((uint8_t)label.size());
+    p.insert(p.end(), label.begin(), label.end());
+    if (dot == std::string::npos) break;
+    start = dot + 1;
+  }
+  p.push_back(0);
+  p.push_back((uint8_t)(qtype >> 8)); p.push_back((uint8_t)(qtype & 0xFF));
+  p.push_back(0); p.push_back(1);
+  return p;
+}
+
+static void test_hash() {
+  puts("hash");
+  // Pinned against tools/build_blocklist.py: a divergence here silently stops the
+  // firmware matching lists that tool produces.
+  check(wire::hash("doubleclick.net", 15) == 0xcd127775cdULL, "doubleclick.net matches the builder");
+  check(wire::hash("googlesyndication.com", 21) == 0xf2167bff62ULL, "googlesyndication.com matches the builder");
+  check(wire::hash("a", 1) != wire::hash("b", 1), "different input, different hash");
+  uint8_t packed[5];
+  wire::pack5(0xcd127775cdULL, packed);
+  check(wire::unpack5(packed) == 0xcd127775cdULL, "pack5 and unpack5 round-trip");
+  check(wire::hash("x", 1) <= wire::HASH_MASK, "stays inside 40 bits");
+}
+
+static void test_skip_name() {
+  puts("skipName");
+  uint8_t p[] = {3,'a','b','c',3,'c','o','m',0};
+  check(wire::skipName(p, sizeof(p), 0) == 9, "steps over a two-label name");
+  uint8_t ptr[] = {0xC0, 0x0C};
+  check(wire::skipName(ptr, 2, 0) == 2, "a pointer is two bytes");
+  check(wire::skipName(ptr, 1, 0) == -1, "a pointer needs both bytes");
+  uint8_t runon[] = {5,'a','b'};
+  check(wire::skipName(runon, sizeof(runon), 0) == -1, "refuses a label running past the end");
+  uint8_t reserved[] = {0x40, 0};
+  check(wire::skipName(reserved, sizeof(reserved), 0) == -1, "refuses reserved length bits");
+}
+
+static void test_parse_question() {
+  puts("parseQuestion");
+  char out[256]; uint16_t qt = 0, qc = 0; int qend = 0;
+  auto p = query("ExAmPlE.CoM");
+  int n = wire::parseQuestion(p.data(), (int)p.size(), out, &qt, &qc, &qend);
+  check(n == 11 && strcmp(out, "example.com") == 0, "lowercases the name");
+  check(qt == 1 && qc == 1 && qend == (int)p.size(), "reports qtype, qclass and the end offset");
+
+  p = query("a.b.c.d.example.com", 28);
+  n = wire::parseQuestion(p.data(), (int)p.size(), out, &qt, &qc, &qend);
+  check(n == 19 && qt == 28, "handles many labels and a non-A qtype");
+
+  std::string longest(63, 'a');                       // 4 x 63 + 3 dots = 255
+  std::string name = longest + "." + longest + "." + longest + "." + longest;
+  p = query(name);
+  check(wire::parseQuestion(p.data(), (int)p.size(), out, &qt, &qc, &qend) == -1,
+        "refuses a name at the 255-byte limit rather than overrun its buffer");
+
+  p = query("example.com");
+  check(wire::parseQuestion(p.data(), 16, out, &qt, &qc, &qend) == -1, "refuses a truncated packet");
+  check(wire::parseQuestion(p.data(), 0, out, &qt, &qc, &qend) == -1, "refuses an empty packet");
+
+  p = query("example.com", 1, 2);
+  check(wire::parseQuestion(p.data(), (int)p.size(), out, &qt, &qc, &qend) == -1, "refuses qdcount 2");
+  p = query("example.com", 1, 0);
+  check(wire::parseQuestion(p.data(), (int)p.size(), out, &qt, &qc, &qend) == -1, "refuses qdcount 0");
+
+  std::vector<uint8_t> bad = {0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0, 0xC0,0x0C, 0,1,0,1};
+  check(wire::parseQuestion(bad.data(), (int)bad.size(), out, &qt, &qc, &qend) == -1,
+        "refuses a compression pointer in the question");
+  bad = {0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0, 64};
+  bad.insert(bad.end(), 64, 'a');
+  bad.insert(bad.end(), {0, 0,1,0,1});
+  check(wire::parseQuestion(bad.data(), (int)bad.size(), out, &qt, &qc, &qend) == -1,
+        "refuses label length 64");
+  bad = {0x12,0x34,0x01,0x00,0,1,0,0,0,0,0,0, 0,0,1,0,1};
+  check(wire::parseQuestion(bad.data(), (int)bad.size(), out, &qt, &qc, &qend) == -1,
+        "refuses an empty name");
+}
+
+// A reply: header, question, then `n` A records with the given TTL.
+static std::vector<uint8_t> reply(uint32_t ttl, int n, bool withOpt = false) {
+  std::vector<uint8_t> p = query("example.com");
+  p[2] = 0x81; p[3] = 0x80;
+  p[6] = 0; p[7] = (uint8_t)n;
+  if (withOpt) { p[10] = 0; p[11] = 1; }
+  for (int k = 0; k < n; k++) {
+    uint8_t rr[] = {0xC0, 0x0C, 0, 1, 0, 1,
+                    (uint8_t)(ttl >> 24), (uint8_t)(ttl >> 16), (uint8_t)(ttl >> 8), (uint8_t)ttl,
+                    0, 4, 10, 0, 0, (uint8_t)(k + 1)};
+    p.insert(p.end(), rr, rr + sizeof(rr));
+  }
+  if (withOpt) {
+    uint8_t opt[] = {0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 0};   // OPT, TTL 0, rdlen 0
+    p.insert(p.end(), opt, opt + sizeof(opt));
+  }
+  return p;
+}
+
+static void test_walk_ttl() {
+  puts("walkTtl");
+  auto p = reply(300, 2);
+  uint32_t mn = 0;
+  check(wire::walkTtl(p.data(), (int)p.size(), 0, &mn) && mn == 300, "finds the TTL");
+
+  check(wire::walkTtl(p.data(), (int)p.size(), 100, nullptr), "ages the records");
+  wire::walkTtl(p.data(), (int)p.size(), 0, &mn);
+  check(mn == 200, "every TTL came down by the age");
+
+  wire::walkTtl(p.data(), (int)p.size(), 5000, nullptr);
+  wire::walkTtl(p.data(), (int)p.size(), 0, &mn);
+  check(mn == 0, "an age past the TTL floors it at zero, it does not wrap");
+
+  p = reply(60, 1, true);
+  check(wire::walkTtl(p.data(), (int)p.size(), 0, &mn) && mn == 60,
+        "ignores the OPT record's TTL, which is not a TTL");
+
+  p = reply(300, 1);
+  p[7] = 5;                                        // claims five answers, carries one
+  check(!wire::walkTtl(p.data(), (int)p.size(), 0, &mn), "refuses a lying answer count");
+  check(!wire::walkTtl(p.data(), 11, 0, &mn), "refuses a packet too short for a header");
+  p = reply(300, 1);
+  p[p.size() - 6] = 0xFF; p[p.size() - 5] = 0xFF;  // rdlen beyond the packet
+  check(!wire::walkTtl(p.data(), (int)p.size(), 0, &mn), "refuses rdata that overruns the packet");
+}
+
+static void test_name_blocked() {
+  puts("nameBlocked");
+  const char* listed[] = {"ads.example", "tracker.io"};
+  auto in = [&](uint64_t h) {
+    for (const char* d : listed) if (wire::hash(d, strlen(d)) == h) return true;
+    return false;
+  };
+  check(wire::nameBlocked("ads.example", 11, in), "the listed name itself");
+  check(wire::nameBlocked("deep.sub.ads.example", 20, in), "a subdomain of it");
+  check(wire::nameBlocked("www.ads.example", 15, in), "with a www. prefix");
+  check(!wire::nameBlocked("example", 7, in), "a bare label is not a match");
+  check(!wire::nameBlocked("notads.example", 14, in), "a name that merely ends similarly");
+  check(!wire::nameBlocked("ads.example.org", 15, in), "a different TLD");
+  check(!wire::nameBlocked("example.com", 11, in), "an unlisted name");
+  auto in2 = [&](uint64_t h) { return wire::hash("co.uk", 5) == h; };
+  check(wire::nameBlocked("a.b.co.uk", 9, in2), "walks parents down to two labels");
+}
+
+static void test_parse_list_line() {
+  puts("parseListLine");
+  auto one = [](const char* line) -> long long {
+    char buf[600]; size_t n = strlen(line);
+    memcpy(buf, line, n); buf[n] = 0;
+    uint64_t h = 0;
+    return wire::parseListLine(buf, (int)n, &h) ? (long long)h : -1;
+  };
+  long long want = (long long)wire::hash("ads.example.com", 15);
+  check(one("||ads.example.com^") == want, "AdGuard syntax");
+  check(one("||ads.example.com^$third-party") == want, "AdGuard with modifiers");
+  check(one("0.0.0.0 ads.example.com") == want, "hosts syntax");
+  check(one("127.0.0.1\tads.example.com") == want, "hosts with a tab and a different IP");
+  check(one("ads.example.com") == want, "a bare domain");
+  check(one("  ads.example.com  ") == want, "surrounding whitespace");
+  check(one("ADS.Example.COM") == want, "mixed case is folded");
+  check(one("ads.example.com.") == want, "a trailing root dot is dropped");
+  check(one("www.ads.example.com") == want, "a www. prefix is stripped");
+  check(one("ads.example.com # comment") == want, "a trailing comment");
+
+  check(one("@@||ads.example.com^") == -1, "an allow rule is skipped");
+  check(one("# ads.example.com") == -1, "a comment line");
+  check(one("! ads.example.com") == -1, "an AdGuard comment");
+  check(one("[Adblock Plus 2.0]") == -1, "a list header");
+  check(one("/^ad[0-9]+\\./") == -1, "a regex rule");
+  check(one("*.example.com") == -1, "a wildcard");
+  check(one("example.com##.ad") == -1, "a cosmetic rule");
+  check(one("") == -1, "an empty line");
+  check(one("com") == -1, "no dot");
+  check(one("a.b") == -1, "shorter than four characters");
+  check(one("localhost") == -1, "localhost");
+  check(one("192.168.1.1 printer") == -1, "a hosts line for a LAN name with no dot");
+  check(one("1.2.3.4 example.com") == -1, "a hosts line whose IP is not a sinkhole");
+  std::string toolong(260, 'a');
+  check(one((toolong + ".com").c_str()) == -1, "longer than 253 characters");
+}
+
+static void test_contains() {
+  puts("contains");
+  std::vector<uint64_t> hashes;
+  for (int i = 0; i < 1000; i++) {
+    std::string s = std::to_string(i);
+    hashes.push_back(wire::hash(s.c_str(), s.size()));
+  }
+  std::sort(hashes.begin(), hashes.end());
+  hashes.erase(std::unique(hashes.begin(), hashes.end()), hashes.end());
+  std::vector<uint8_t> packed(hashes.size() * 5);
+  for (size_t i = 0; i < hashes.size(); i++) wire::pack5(hashes[i], &packed[i * 5]);
+
+  bool all = true;
+  for (uint64_t h : hashes) all &= wire::contains(packed.data(), (uint32_t)hashes.size(), h);
+  check(all, "finds every entry, including the first and last");
+  check(!wire::contains(packed.data(), (uint32_t)hashes.size(), 0), "a hash below the range");
+  check(!wire::contains(packed.data(), (uint32_t)hashes.size(), wire::HASH_MASK), "a hash above the range");
+  check(!wire::contains(packed.data(), 0, hashes[0]), "an empty list matches nothing");
+  int misses = 0;
+  for (int i = 1000; i < 2000; i++) {
+    std::string s = std::to_string(i);
+    if (!wire::contains(packed.data(), (uint32_t)hashes.size(), wire::hash(s.c_str(), s.size()))) misses++;
+  }
+  check(misses == 1000, "reports no false positives over a thousand absent keys");
+}
+
+int main() {
+  test_hash();
+  test_skip_name();
+  test_parse_question();
+  test_walk_ttl();
+  test_name_blocked();
+  test_parse_list_line();
+  test_contains();
+  printf("\n%s\n", failures ? "FAILURES" : "all wire tests passed");
+  return failures ? 1 : 0;
+}

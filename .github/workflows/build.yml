@@ -42,6 +42,10 @@ jobs:
           test "$(stat -c%s t.bin)" -eq 15   # 3 entries x 5 bytes
       - name: Unit tests
         run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Wire-format tests
+        # src/wire.h is the parsing and matching logic every target shares, with no
+        # platform dependencies, so these run here and cover all of them at once.
+        run: c++ -std=c++17 -Wall -Werror -I src -o /tmp/test_wire tools/test_wire.cpp && /tmp/test_wire
       - name: Tools compile
         # dnsbench.py and dnscheck.py need a live device, so CI can only check
         # that they are not broken on the way in.
