@@ -80,9 +80,24 @@ static bool memContains(const Blocklist* b, uint64_t h) {
   return false;
 }
 
+// File mode asks flash for every parent of every name, and a flash read in the
+// lwIP thread is hundreds of microseconds. A direct-mapped memo of recent answers
+// (1.5 KB) keeps that off the hot path — the rewrite had dropped the equivalent
+// cache the original lookup had, which cost the no-PSRAM boards dearly under load.
+static const int MEMO = 256;                   // power of two
+static uint8_t memoKey[MEMO][HASH_BYTES];
+static uint8_t memoVal[MEMO];                  // 0 = empty, 1 = not listed, 2 = listed
+static void memoClear() { memset(memoVal, 0, sizeof(memoVal)); }
+
 static bool fileContains(uint64_t h) {
   bool hit = false;
   xSemaphoreTake(blFileMux, portMAX_DELAY);
+  uint32_t slot = (uint32_t)h & (MEMO - 1);
+  if (memoVal[slot]) {
+    bool same = true;
+    for (int k = 0; k < HASH_BYTES && same; k++) same = memoKey[slot][k] == (uint8_t)(h >> (8 * k));
+    if (same) { bool r = memoVal[slot] == 2; xSemaphoreGive(blFileMux); return r; }
+  }
   uint32_t n = blFileN;
   if (n && blIdx && h >= unpack5(blIdx[0]) && h <= unpack5(blIdx[IDX - 1])) {
     int lo = 0, hi = IDX - 2, seg = 0;
@@ -97,6 +112,8 @@ static bool fileContains(uint64_t h) {
       cnt = blFile.read(rangeBuf, cnt * HASH_BYTES) / HASH_BYTES;
       for (uint32_t i = 0; i < cnt; i++) { uint64_t v = unpack5(rangeBuf + i * HASH_BYTES); if (v >= h) { hit = v == h; break; } }
     }
+    for (int k = 0; k < HASH_BYTES; k++) memoKey[slot][k] = (uint8_t)(h >> (8 * k));
+    memoVal[slot] = hit ? 2 : 1;               // only memoised while a list is loaded
   }
   xSemaphoreGive(blFileMux);
   return hit;
@@ -139,6 +156,7 @@ bool dnsLoadBlocklist(const char* path) {
   xSemaphoreTake(blFileMux, portMAX_DELAY);
   if (blFile) blFile.close();
   blFile = f; blFileN = n;
+  memoClear();                                 // answers from the previous list are void
   if (!blIdx) blIdx = (uint8_t(*)[HASH_BYTES])malloc(IDX * HASH_BYTES);
   for (int i = 0; blIdx && i < IDX; i++) {
     blFile.seek((uint32_t)((uint64_t)i * (n - 1) / (IDX - 1)) * HASH_BYTES);
@@ -278,6 +296,7 @@ void dnsUnloadBlocklist() {
   xSemaphoreTake(blFileMux, portMAX_DELAY);
   if (blFile) blFile.close();
   blFileN = 0;
+  memoClear();
   xSemaphoreGive(blFileMux);
 }
 
