@@ -162,6 +162,16 @@ the ClientHello. The second is a CDN difference only: the two resolvers returned
 different Cloudflare edges and TLS completed, so the card says DNS differs but does
 not call it a block.
 
+## CONNECT proxy
+
+`curl -x http://192.168.1.240:8080 -I https://discord.com` reached the proxy,
+got `200 Connection Established`, resolved discord.com over DoT, opened TCP 443,
+and split the 321-byte ClientHello into 14 segments. The TLS handshake still
+died with `SSL_ERROR_SYSCALL`: this line's DPI reassembles the segments and
+resets, so the split alone is not enough here. The Windows zapret profile on the
+same line uses `fake,split2`; the fake SNI is the next piece. The proxy counters
+show the split and the bytes sent before the reset.
+
 ## Targets
 
 | env | chip | builds | RAM | hardware run |

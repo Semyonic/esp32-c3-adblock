@@ -187,6 +187,13 @@ are in play it says so: Discord, measured here, gets a poisoned 195.175.254.2 fr
 ISP resolver while DoT returns Cloudflare, TCP 443 opens, and the TLS handshake dies.
 One test runs at a time; a second click is told the box is busy.
 
+The **proxy card** is the other half: `/proxy.pac` sends only the names in
+`src/proxy.cpp`'s list through an HTTP CONNECT proxy on :8080. The proxy resolves
+the name over DoT, opens a plain TCP connection, and splits the first TLS
+ClientHello into 14 segments; TLS is relayed end to end, so there is no
+certificate to install. A browser or OS that takes the PAC URL needs no other
+configuration.
+
 **4 MB flash tradeoff:** firmware OTA needs *two* app slots, which leaves ~1.3 MB for the
 blocklist (**~250k domains max**). The aggressive 537k "ultimate" list only fits the
 single-app partition table (no firmware OTA). Pick your tradeoff in `partitions.csv`.
@@ -292,6 +299,7 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
 
 - ✅ Web dashboard — per-client block/allow counts, ban a client, add custom domains
 - ✅ Censorship diagnostic — LAN resolver vs DoT, TCP 443 and TLS SNI, one test at a time
+- ✅ CONNECT proxy with PAC — DoT resolve, ClientHello split, no TLS termination
 - ✅ mDNS (`c3adblock.local`) for discovery
 - ✅ OTA — firmware + blocklist update over WiFi, plus scheduled remote blocklist pulls
 - ✅ Captive-portal WiFi setup (no hardcoded creds) + one-click browser web-installer
