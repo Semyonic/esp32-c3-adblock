@@ -56,12 +56,26 @@ once it had appeared it stayed at exactly 1 across the following 22,880 queries
 boots, each loaded from the instant the device first answered, served 3,320,
 2,080 and 2,080 queries with every counter at zero and nothing in the log.
 
-So the cause is not established, and this file does not guess at one. An earlier
-draft blamed ARP resolution; that was withdrawn after testing failed to support
-it (and the reasoning was weak to begin with — the device learns a client's MAC
-from the very packet it is replying to). `sendRaw()` now prints the lwIP error
-code and whether the buffer allocation failed, so a recurrence will report what
-it is. No client ever saw a loss from it in any run.
+The cause is now known: `udp_sendto` returning **ERR_MEM**, reported as
+`txerrreply` in `/stats.json`. On a later boot two of them happened inside the
+first 319 queries and the counter then sat at exactly 2 across the next 14,800
+queries of load. No client saw a loss from it in any run — the stub resolver
+simply asks again.
+
+Getting that answer took three corrections worth recording:
+
+1. An early draft blamed ARP resolution with no evidence; it was withdrawn.
+2. The reason was then printed with `Serial.printf` from inside lwIP's thread,
+   which produced nothing at all while the counters plainly moved — USB-CDC
+   writes from that context are dropped. The reason is now kept in a variable
+   and served over HTTP, which is the only reason it is readable.
+3. The failure path was exercised deliberately, by building with the upstream
+   address set to an unroutable 169.254.x: 22 refused queries, reason ERR_MEM,
+   attributed to the query direction, zero refused replies, and the device still
+   answering and still filtering from its local list. That is what identified
+   the code — and ERR_MEM out of `udp_sendto` is what lwIP returns when a packet
+   cannot be queued for address resolution, so the original ARP reading was the
+   right mechanism reached the wrong way.
 
 Earlier in the same session a 180 s window at 85 q/s showed the device counting
 all 15,360 queries this machine sent, with internal loss, send failures and

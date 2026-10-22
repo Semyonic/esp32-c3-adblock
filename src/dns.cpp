@@ -348,11 +348,12 @@ static bool isBanned(uint32_t ip) {
 // ---------- stats ----------
 static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0;
 static volatile uint32_t stTxFailReply = 0, stTxFailQuery = 0;
+static volatile int32_t  stTxErrReply = 0, stTxErrQuery = 0;   // last reason, see sendRaw
 static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
 DnsStats dnsStats() {
   DotStats d = dotStats();
-  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFailReply, stTxFailQuery, d.up };
+  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFailReply, stTxFailQuery, stTxErrReply, stTxErrQuery, d.up };
 }
 
 // ---------- answer cache ----------
@@ -391,16 +392,18 @@ static void sendRaw(udp_pcb* pcb, const uint8_t* d, int len, const ip_addr_t* to
   // Counted per direction, because the consequences differ: a query lwIP refuses
   // to forward is resent by expireTick 350 ms later, while a reply it refuses is
   // an answer the client never gets and must ask for again.
+  // The reason is recorded, not printed: Serial output from lwIP's thread is
+  // dropped by the USB-CDC path, which is why an earlier attempt to log this
+  // produced nothing while the counters were plainly moving. /stats.json carries
+  // it instead (1 = no buffer, otherwise the lwIP err_t).
   if (!pb) {
-    if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++;
-    Serial.printf("[dns] no pbuf for a %d B %s\n", len, pcb == srvPcb ? "reply" : "query");
+    if (pcb == srvPcb) { stTxFailReply++; stTxErrReply = 1; } else { stTxFailQuery++; stTxErrQuery = 1; }
     return;
   }
   memcpy(pb->payload, d, len);
   err_t e = udp_sendto(pcb, pb, to, port);
   if (e != ERR_OK) {
-    if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++;
-    Serial.printf("[dns] udp_sendto refused a %s: err %d\n", pcb == srvPcb ? "reply" : "query", (int)e);
+    if (pcb == srvPcb) { stTxFailReply++; stTxErrReply = e; } else { stTxFailQuery++; stTxErrQuery = e; }
   }
   pbuf_free(pb);
 }

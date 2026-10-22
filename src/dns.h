@@ -53,6 +53,7 @@ struct DnsStats {
   uint32_t dotQueries, dotHandshakes, dotHsMs;   // queries sent encrypted; TLS link cost
   uint32_t dotDropped;                           // replies that found no free hand-off slot
   uint32_t txFailedReply, txFailedQuery;         // packets lwIP would not send, by direction
+  int32_t  txErrReply, txErrQuery;               // why: 1 = no buffer, else lwIP err_t
   bool dotUp;
 };
 DnsStats dnsStats();

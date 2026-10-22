@@ -295,6 +295,7 @@ static void handleStats() {
              ",\"dot\":" + (ds.dotUp ? "true" : "false") + ",\"dotq\":" + ds.dotQueries +
              ",\"doths\":" + ds.dotHandshakes + ",\"dothsms\":" + ds.dotHsMs +
              ",\"lost\":" + ds.upstreamLost + ",\"dotdrop\":" + ds.dotDropped + ",\"txfailreply\":" + ds.txFailedReply + ",\"txfailquery\":" + ds.txFailedQuery +
+             ",\"txerrreply\":" + ds.txErrReply + ",\"txerrquery\":" + ds.txErrQuery +
              ",\"domains\":" + dnsBlocklistCount() + ",\"rssi\":" + WiFi.RSSI() + ",\"temp\":" + String(temperatureRead(), 1) +
              ",\"heap\":" + ESP.getFreeHeap() + ",\"psram\":" + ESP.getFreePsram() + ",\"uptime\":\"" + ut + "\"" +
              ",\"upurl\":\"" + jesc(updateUrl) + "\",\"upiv\":" + updateIntervalH + ",\"upstat\":\"" + jesc(updateStatus) + "\"" +
