@@ -45,6 +45,13 @@ void     dnsSetCustom(const uint64_t* hashes, int n);
 void     dnsSetBanned(const uint32_t* ips, int n);
 void     dnsSetBlocking(bool on);
 
+// The last few names that were sinkholed, so the dashboard can show what is
+// being blocked and not just how much. A fixed ring written in the DNS path:
+// no allocation, one memcpy per blocked query.
+struct DnsHit { char name[48]; uint32_t ip; uint32_t age; };   // age = seconds ago
+int  dnsRecent(DnsHit* out, int max);                          // newest first, returns count
+uint32_t dnsHitSeq();                                          // total ever recorded, only grows
+
 struct DnsEvent { uint32_t ip; uint8_t blocked; };
 bool     dnsPollEvent(DnsEvent* e);          // drain from loop(): per-client counters
 

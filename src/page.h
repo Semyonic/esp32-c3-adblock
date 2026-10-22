@@ -5,7 +5,7 @@
 // editable via /label, live rate, block-ratio donut. Self-contained, ~15 KB.
 
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<meta name=theme-color content=#0a0e1a><title>C3 AdBlock</title><style>
+<meta name=theme-color content=#0a0e1a><title>AdBlock</title><style>
 *{box-sizing:border-box}body{font:14px/1.5 system-ui,-apple-system,sans-serif;margin:0;min-height:100vh;background:#0a0e1a;color:#e7ecf5}
 body:before{content:'';position:fixed;inset:0;background:radial-gradient(600px 400px at 15% 0%,rgba(52,211,153,.16),transparent 60%),radial-gradient(700px 500px at 90% 10%,rgba(56,130,246,.14),transparent 60%),radial-gradient(500px 500px at 60% 100%,rgba(167,139,250,.12),transparent 60%);pointer-events:none}
 .glass{background:rgba(255,255,255,.05);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.1);border-radius:20px}
@@ -27,6 +27,18 @@ select,input{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.14);c
 .lab{color:#94a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.8px}
 .donut{display:flex;align-items:center;gap:18px}
 .legend div{margin:5px 0;font-size:13px}.legend i{width:10px;height:10px;border-radius:99px;display:inline-block;margin-right:8px}
+.kbox{display:flex;flex-direction:column;justify-content:space-between}
+.corp{margin:14px 0 2px}
+.corp .c{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.corp .av{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;font-size:13px;font-weight:800;flex:none;color:#0a0e1a}
+.corp .d{flex:1;min-width:0}
+.corp .t{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px}
+.corp .t span{color:#94a3b8;font-variant-numeric:tabular-nums}
+.corp .tr{height:6px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+.corp .fl{height:100%;border-radius:99px;transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.tags{flex:1;display:flex;flex-wrap:wrap;align-content:flex-start;gap:6px;overflow:hidden;margin-bottom:6px}
+.tags span{border-radius:99px;padding:4px 10px;white-space:nowrap;border:1px solid;transition:.6s;font-size:12px}
+.tags i{font-style:normal;opacity:.55;font-size:10.5px;margin-left:5px}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
 .kpi{padding:14px 16px}.kpi .v{font-size:22px;font-weight:700;margin-top:2px}
 .up{border:1.5px dashed rgba(255,255,255,.2);border-radius:16px;padding:16px;text-align:center;color:#94a3b8;font-size:13px;margin-top:10px;cursor:pointer;display:block}
@@ -36,7 +48,7 @@ h2{font-size:13px;color:#94a3b8;text-transform:uppercase;letter-spacing:.8px;mar
 .cl{padding:14px 16px;transition:.15s}.cl:hover{border-color:rgba(52,211,153,.4);transform:translateY(-2px)}
 .cl.bz{border-color:rgba(248,113,113,.45)}
 .cl .top{display:flex;align-items:center;gap:10px}
-.av{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;font-size:15px;font-weight:700;color:#06281f;background:linear-gradient(135deg,#6ee7b7,#67e8f9);flex:none}
+.av{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;font-size:18px;font-weight:700;color:#06281f;background:linear-gradient(135deg,#6ee7b7,#67e8f9);flex:none;filter:saturate(.85)}
 .cl.bz .av{background:linear-gradient(135deg,#fca5a5,#fbbf24)}
 .cl .nm{font-weight:600;word-break:break-all}
 .cl .sub{color:#94a3b8;font-size:11.5px;font-family:ui-monospace,Menlo,monospace}
@@ -59,7 +71,7 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
 </style></head><body><div class=wrap>
 <header>
  <div class=logo>🛡️</div>
- <div><h1>C3 AdBlock<small id=host>—</small></h1></div>
+ <div><h1><span id=brand>AdBlock</span><small id=host>—</small></h1></div>
  <span class=pill id=stpill><span class=dot></span><span id=sttxt>—</span></span>
  <div class=sp></div>
  <select id=pausedur><option value=30>30 sn</option><option value=300 selected>5 dk</option><option value=1800>30 dk</option><option value=0>Ben açana dek</option></select>
@@ -69,9 +81,9 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
 <div class=hero>
  <div class="glass hpad donut">
   <svg width=140 height=140 viewBox="0 0 140 140">
-   <defs><linearGradient id=gA x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color=#f87171/><stop offset=1 stop-color=#fbbf24/></linearGradient>
-   <linearGradient id=gG x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color=#34d399/><stop offset=1 stop-color=#22d3ee/></linearGradient></defs>
-   <circle cx=70 cy=70 r=56 fill=none stroke=rgba(255,255,255,.08) stroke-width=13/>
+   <defs><linearGradient id=gA x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color="#f87171"/><stop offset=1 stop-color="#fbbf24"/></linearGradient>
+   <linearGradient id=gG x1=0 y1=0 x2=1 y2=1><stop offset=0 stop-color="#34d399"/><stop offset=1 stop-color="#22d3ee"/></linearGradient></defs>
+   <circle cx=70 cy=70 r=56 fill=none stroke=rgba(255,255,255,.08) stroke-width="13"/>
    <circle id=dnG cx=70 cy=70 r=56 fill=none stroke=url(#gG) stroke-width=13 stroke-linecap=round transform=rotate(-90 70 70) stroke-dasharray="0 351.9"/>
    <circle id=dnR cx=70 cy=70 r=56 fill=none stroke=url(#gA) stroke-width=13 stroke-linecap=round transform=rotate(-90 70 70) stroke-dasharray="0 351.9"/>
    <text x=70 y=65 text-anchor=middle fill=#e7ecf5 font-size=19 font-weight=800 id=donutpct>—</text>
@@ -82,7 +94,12 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
    <div><i style="background:linear-gradient(90deg,#34d399,#22d3ee)"></i><span id=lgA>—</span> geçti</div>
   </div>
  </div>
- <div class="glass hpad"><div class=lab>ENGELLENEN · TOPLAM</div><div class=big id=kB>—</div><div class=note id=rate>&nbsp;</div></div>
+ <div class="glass hpad kbox">
+  <div><div class=lab>ENGELLENEN · TOPLAM</div><div class=big id=kB>—</div><div class=note id=rate>&nbsp;</div></div>
+  <div class=corp id=corp></div>
+  <div class=tags id=tags></div>
+  <div class=note id=topcl>&nbsp;</div>
+ </div>
 </div>
 <div class=kpis>
  <div class="glass kpi"><div class=lab>✅ Geçen</div><div class=v id=kA>—</div></div>
@@ -129,16 +146,67 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
  <div class=hx id=hx></div>
  <div class=note id=hxnote></div>
 </div>
-<footer>C3 AdBlock · <span id=demo></span>3 sn'de bir yenilenir</footer>
+<footer><span id=foot>AdBlock</span> · <span id=demo></span>3 sn'de bir yenilenir</footer>
 </div><script>
 const H={'X-Requested-With':'c3-adblock'}
 function fmt(n){return n.toLocaleString('tr-TR')}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-let prev=null
+let prev=null,seen=0,cnt={},last={}
+// Hostnames say little on their own; who owns them says a lot. doubleclick.net,
+// googlesyndication.com and app-measurement.com are one company asking three ways.
+const OWN=[[/google|doubleclick|youtube|app-measurement|crashlytics|admob|gstatic/,'Google','#ea4335','G'],
+ [/facebook|instagram|fbcdn|whatsapp/,'Meta','#0866ff','M'],
+ [/tiktok|bytedance/,'TikTok','#ff0050','T'],
+ [/microsoft|windows|bing|aria|msn/,'Microsoft','#00a4ef','M'],
+ [/amazon|alexa|amazonaws/,'Amazon','#ff9900','A'],
+ [/apple|icloud/,'Apple','#a3a3a3','A'],
+ [/yandex|mail\.ru/,'Yandex','#fc3f1d','Y'],
+ [/criteo|taboola|outbrain|yieldmo|scorecard|comscore|quantserve|adsrvr|pubmatic/,'Reklam ağları','#fbbf24','R']]
+function owner(d){for(const o of OWN) if(o[0].test(d)) return {n:o[1],c:o[2],i:o[3]}; return {n:'Diğer',c:'#64748b',i:'·'}}
+
+// The device keeps only its last few blocks; `hits` only ever grows, so the
+// difference tells us exactly how many of them we have not counted yet.
+function trackers(s){
+ if(!s.recent) return
+ const fresh=seen?Math.min(s.hits-seen,s.recent.length):s.recent.length
+ for(let i=fresh-1;i>=0;i--){const r=s.recent[i];cnt[r.n]=(cnt[r.n]||0)+1;last[r.n]=Date.now()-r.s*1000}
+ seen=s.hits
+ const top=Object.entries(cnt).sort((a,b)=>b[1]-a[1])
+ if(!top.length){corp.innerHTML='';tags.innerHTML='<span style="border-color:rgba(255,255,255,.12);color:#64748b">henüz engellenen yok</span>';return}
+ const g={}
+ for(const e of top){const o=owner(e[0]);if(!g[o.n])g[o.n]={v:0,c:o.c,i:o.i,n:0};g[o.n].v+=e[1];g[o.n].n++}
+ const gs=Object.entries(g).sort((a,b)=>b[1].v-a[1].v),gm=gs[0][1].v
+ corp.innerHTML=gs.slice(0,4).map(e=>'<div class=c><div class=av style=background:'+e[1].c+'>'+e[1].i+
+  '</div><div class=d><div class=t><b>'+esc(e[0])+'</b><span>'+fmt(e[1].v)+' · '+e[1].n+' alan adı</span></div>'+
+  '<div class=tr><div class=fl style="width:'+(e[1].v/gm*100).toFixed(0)+'%;background:'+e[1].c+'"></div></div></div></div>').join('')
+ const mx=top[0][1]
+ tags.innerHTML=top.slice(0,10).map(e=>{
+  const hot=Math.max(0,1-(Date.now()-last[e[0]])/45000)
+  return '<span style="font-size:'+(11+e[1]/mx*4).toFixed(1)+'px;background:rgba(248,113,113,'+(.06+hot*.26).toFixed(2)+
+   ');border-color:rgba(248,113,113,'+(.16+hot*.48).toFixed(2)+');color:'+(hot>.5?'#fecaca':'#fca5a5')+'">'+
+   esc(e[0])+'<i>'+e[1]+'</i></span>'}).join('')
+}
+// What the device probably is, guessed from the name it announces. An initial
+// told you nothing; a phone, a TV and a server are worth telling apart at a
+// glance. Falls back to the first letter when nothing matches.
+function icon(name){
+ const n=(name||'').toLowerCase(),m=[
+  [/iphone|ipad|phone|android|pixel|galaxy|xiaomi|redmi|huawei|oneplus|telefon/,'📱'],
+  [/macbook|laptop|thinkpad|notebook|imac|desktop|win|mac-|pc$/,'💻'],
+  [/\btv\b|roku|chromecast|firestick|appletv|bravia|vestel|arcelik|arçelik/,'📺'],
+  [/watch|band|\bfit\b/,'⌚'],[/printer|yazici|yazıcı|epson|canon|brother/,'🖨️'],
+  [/\bcam\b|kamera|ipc|doorbell|ring|nest/,'📷'],[/echo|alexa|homepod|sonos|speaker|hoparlor/,'🔊'],
+  [/playstation|ps4|ps5|xbox|switch|steam|konsol/,'🎮'],
+  [/server|nas|synology|gx10|raspberry|\bpi\b|proxmox|sunucu/,'🖥️'],
+  [/router|modem|unifi|mikrotik|airport|gateway|\bap\b/,'📡'],
+  [/esp|tasmota|shelly|sonoff|bulb|ampul|plug|priz/,'💡']]
+ for(const [re,ic] of m) if(re.test(n)) return ic
+ return esc((name&&name[0]||'?').toUpperCase())
+}
 function togglePause(){fetch(stpill.className=='pill off'?'/resume':'/pause?s='+pausedur.value,{headers:H}).then(load)}
 async function load(){let s;try{s=await(await fetch('/stats.json')).json()}catch(e){demo.textContent='demo — ';render(demodata());return}
 render(s)}
-function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,chits:331204,dot:true,dotq:180893,lost:0,txfailreply:0,txfailquery:0,txerrreply:0,txerrquery:0,dotdrop:0,doths:3,dothsms:1542,psram:5161372,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
+function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,hits:9,recent:[{n:'doubleclick.net',c:'192.168.1.7',s:2},{n:'googlesyndication.com',c:'192.168.1.7',s:5},{n:'graph.facebook.com',c:'192.168.1.23',s:9},{n:'app-measurement.com',c:'192.168.1.42',s:14},{n:'analytics.tiktok.com',c:'192.168.1.42',s:20},{n:'adservice.google.com',c:'192.168.1.7',s:31},{n:'criteo.com',c:'192.168.1.77',s:44},{n:'telemetry.microsoft.com',c:'192.168.1.10',s:58},{n:'doubleclick.net',c:'192.168.1.23',s:71}],chits:331204,dot:true,dotq:180893,lost:0,txfailreply:0,txfailquery:0,txerrreply:0,txerrquery:0,dotdrop:0,doths:3,dothsms:1542,psram:5161372,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
 // The counters that say whether the DNS engine itself is dropping anything.
 // Every one of these should stay at zero; when one climbs, it names the stage.
 function health(s){
@@ -168,17 +236,29 @@ dnR.setAttribute('stroke-dasharray',(C*frac).toFixed(1)+' '+C)
 dnR.setAttribute('stroke-dashoffset',(-C*(1-frac)).toFixed(1))
 donutpct.textContent=Math.round(frac*100)+'%';lgB.textContent=fmt(s.blocked);lgA.textContent=fmt(s.allowed)
 kB.textContent=fmt(s.blocked);kA.textContent=fmt(s.allowed)
-if(prev){let dt=(Date.now()-prev.t)/1000,r=(s.blocked-prev.b)/dt;rate.textContent=r>=0?'+ '+r.toFixed(1)+' sorgu/sn (canlı)':'\u00a0'}
+if(prev){
+ let dt=(Date.now()-prev.t)/1000,r=(s.blocked-prev.b)/dt
+ rate.textContent=r>=0?'+ '+r.toFixed(1)+' engelleme/sn (canlı)':'\u00a0'
+ // A couple of minutes of history kept in the page: the total alone never
+ // showed whether anything was happening right now.
+ if(r>=0){hist.push(r);if(hist.length>60)hist.shift()}
+}
+// Which device is generating the blocked traffic: the headline says how much,
+// never who.
+{const t=s.clients&&s.clients.length?s.clients.reduce((a,b)=>b.blocked>a.blocked?b:a):null
+ topcl.textContent=t&&t.blocked?'en çok '+(t.name||t.ip)+' — '+fmt(t.blocked)+' engellendi':'\u00a0'}
+{const chip=(s.chip||'').replace('ESP32-',''),nm=(chip?chip+' ':'')+'AdBlock'
+ brand.textContent=nm;foot.textContent=nm;document.title=nm}
 prev={b:s.blocked,t:Date.now()}
 kD.textContent=fmt(s.domains);kR.textContent=s.rssi+' dBm';kT.textContent=s.temp+' °C';kH.textContent=Math.round(s.heap/1024)+' KB';kU.textContent=s.uptime
 kC.textContent=s.allowed?Math.round(s.chits/s.allowed*100)+'%':'—';kCn.textContent=fmt(s.chits||0)+' yanıt bellekten'
-health(s)
+health(s);trackers(s)
 kE.textContent=s.dot?'açık':'kapalı';kE.style.color=s.dot?'#34d399':'#fbbf24'
 kEn.textContent=s.dot?fmt(s.dotq||0)+' sorgu TLS ile':'sorgular şifresiz gidiyor'
 cnum.textContent=s.clients.length
 ct.innerHTML=s.clients.slice().sort((a,b)=>(b.blocked+b.allowed)-(a.blocked+a.allowed)).map(c=>{
 let nm=c.name||c.ip,totc=c.blocked+c.allowed,pct=totc?Math.round(c.blocked/totc*100):0
-return `<div class="cl glass ${c.banned?'bz':''}"><div class=top><div class=av>${esc((nm[0]||'?').toUpperCase())}</div><div class=tt style=min-width:0><div class=nm>${esc(nm)}${c.src=='man'?' <i class="tg m">elle</i>':c.src=='mdns'?' <i class="tg a">mDNS</i>':''} <button class=pen data-mac="${c.mac}" data-nm="${esc(c.name||'')}">✎</button></div><div class=sub>${c.ip} · ${c.mac.slice(0,8)}</div></div></div><div class=bar><i style="width:${pct}%"></i></div><div class=nums><span class=bred><b>${fmt(c.blocked)}</b> 🚫</span><span class=agrn><b>${fmt(c.allowed)}</b> ✅</span><button class="ban ${c.banned?'unb':''}" data-ip="${c.ip}">${c.banned?'Aç':'Yasakla'}</button></div></div>`}).join('')
+return `<div class="cl glass ${c.banned?'bz':''}"><div class=top><div class=av>${icon(nm)}</div><div class=tt style=min-width:0><div class=nm>${esc(nm)}${c.src=='man'?' <i class="tg m">elle</i>':c.src=='mdns'?' <i class="tg a">mDNS</i>':''} <button class=pen data-mac="${c.mac}" data-nm="${esc(c.name||'')}">✎</button></div><div class=sub>${c.ip} · ${c.mac.slice(0,8)}</div></div></div><div class=bar><i style="width:${pct}%"></i></div><div class=nums><span class=bred><b>${fmt(c.blocked)}</b> 🚫</span><span class=agrn><b>${fmt(c.allowed)}</b> ✅</span><button class="ban ${c.banned?'unb':''}" data-ip="${c.ip}">${c.banned?'Aç':'Yasakla'}</button></div></div>`}).join('')
 dnum.textContent=s.custom.length
 chips.innerHTML=s.custom.length?s.custom.map(d=>`<span class=chip>${esc(d)}<button data-d="${esc(d)}">×</button></span>`).join(''):'<span class=note>henüz yok</span>'
 if(document.activeElement!=uurl)uurl.value=s.upurl||'';

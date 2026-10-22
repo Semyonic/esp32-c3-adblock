@@ -264,6 +264,45 @@ bool dnsUsesPsram() { return usePsram; }
 
 // ---------- custom domains, bans, pause (set from loop, read by the task) ----------
 static portMUX_TYPE listMux = portMUX_INITIALIZER_UNLOCKED;
+
+// ---------- recent blocks (written in the DNS path, read from loop) ----------
+#ifdef BOARD_HAS_PSRAM
+static const int HITS = 48;
+#else
+static const int HITS = 16;                    // the small boards have little DRAM
+#endif
+struct Hit { char name[48]; uint32_t ip, at; };
+static Hit hits[HITS];
+static volatile uint32_t hitSeq = 0;           // total ever recorded; index = seq % HITS
+static portMUX_TYPE hitMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void noteHit(const char* name, int n, uint32_t ip, uint32_t now) {
+  if (n <= 0) return;
+  if (n > (int)sizeof(Hit::name) - 1) n = sizeof(Hit::name) - 1;
+  portENTER_CRITICAL(&hitMux);
+  Hit* h = &hits[hitSeq % HITS];
+  memcpy(h->name, name, n); h->name[n] = 0; h->ip = ip; h->at = now;
+  hitSeq++;
+  portEXIT_CRITICAL(&hitMux);
+}
+
+uint32_t dnsHitSeq() { return hitSeq; }
+
+int dnsRecent(DnsHit* out, int max) {
+  uint32_t now = nowS();
+  int n = 0;
+  portENTER_CRITICAL(&hitMux);
+  uint32_t seq = hitSeq;
+  for (uint32_t i = 0; i < seq && n < max && i < (uint32_t)HITS; i++) {
+    const Hit* h = &hits[(seq - 1 - i) % HITS];
+    if (!h->name[0]) break;
+    memcpy(out[n].name, h->name, sizeof(out[n].name));
+    out[n].ip = h->ip; out[n].age = now - h->at;
+    n++;
+  }
+  portEXIT_CRITICAL(&hitMux);
+  return n;
+}
 static const int MAX_CUSTOM = 200, MAX_BAN = 32;
 // volatile: written from loop(), read lock-free from the lwIP thread (see isCustom)
 static uint64_t customH[MAX_CUSTOM]; static volatile int nCustom = 0;
@@ -533,7 +572,10 @@ static void onClient(int n, const ip_addr_t* from, uint16_t port) {
   DnsEvent ev = { cip, blocked }; xQueueSend(evq, &ev, 0);  // full queue: per-client count lost, totals still right
   if (blocked) {
     stBlocked++;
-    if (nl > 0) { int len = buildBlocked(rx, qend, qtype); sendRaw(srvPcb, tx, len, from, port); }
+    if (nl > 0) {
+      noteHit(name, nl, cip, nowS());                       // what was blocked, for the dashboard
+      int len = buildBlocked(rx, qend, qtype); sendRaw(srvPcb, tx, len, from, port);
+    }
     return;
   }
   stAllowed++;

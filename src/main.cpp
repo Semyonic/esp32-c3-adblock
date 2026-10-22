@@ -290,8 +290,12 @@ static void handleStats() {
   uint32_t up = millis() / 1000;
   char ut[24]; snprintf(ut, sizeof(ut), "%lud %luh %lum", up/86400, (up%86400)/3600, (up%3600)/60);
   DnsStats ds = dnsStats();
-  String j; j.reserve(512 + numClients * 170 + numCustom * 48);   // one allocation, not ~700 reallocs
-  j += "{\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + ds.blocked + ",\"allowed\":" + ds.allowed + ",\"chits\":" + ds.cacheHits +
+  // One allocation instead of ~700 reallocs; the extra room is the recent-block feed.
+  String j; j.reserve(1024 + numClients * 170 + numCustom * 48 + 24 * 80);
+  // The dashboard names the board from this rather than hard-coding one, so an
+  // S3 does not introduce itself as a C3.
+  j += "{\"chip\":\"" + String(ESP.getChipModel()) + "\"" +
+       ",\"ip\":\"" + WiFi.localIP().toString() + "\",\"blocked\":" + ds.blocked + ",\"allowed\":" + ds.allowed + ",\"chits\":" + ds.cacheHits +
              ",\"dot\":" + (ds.dotUp ? "true" : "false") + ",\"dotq\":" + ds.dotQueries +
              ",\"doths\":" + ds.dotHandshakes + ",\"dothsms\":" + ds.dotHsMs +
              ",\"lost\":" + ds.upstreamLost + ",\"dotdrop\":" + ds.dotDropped + ",\"txfailreply\":" + ds.txFailedReply + ",\"txfailquery\":" + ds.txFailedQuery +
@@ -302,7 +306,15 @@ static void handleStats() {
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
              ",\"defcreds\":" + ((strcmp(WEB_PASS, "CHANGE_ME_WEB_PASSWORD") == 0 || strcmp(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") == 0) ? "true" : "false") +
-             ",\"clients\":[";
+             ",\"hits\":" + dnsHitSeq() +      // monotonic: lets the page tell new blocks from ones it has already drawn
+             ",\"recent\":[";
+  // The names that were actually sinkholed, newest first — the dashboard feed.
+  { DnsHit h[24]; int n = dnsRecent(h, 24);
+    for (int i = 0; i < n; i++) {
+      IPAddress ip(h[i].ip);
+      j += (i ? "," : ""); j += "{\"n\":\"" + jesc(h[i].name) + "\",\"c\":\"" + ip.toString() + "\",\"s\":" + h[i].age + "}";
+    } }
+  j += "],\"clients\":[";
   for (int i = 0; i < numClients; i++) { Dev& c = clients[i]; IPAddress ip(c.ip);
     const char* src = c.label.length() ? "man" : (c.mdns.length() ? "mdns" : "ip");
     String nm = c.label.length() ? c.label : (c.mdns.length() ? c.mdns : "");
