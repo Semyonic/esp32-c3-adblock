@@ -14,6 +14,7 @@
 #include <NetworkClientSecure.h>
 #include <Update.h>
 #include <esp_random.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -209,7 +210,10 @@ void diagInit() {
   memset(&result, 0, sizeof(result));
   state = DIAG_IDLE;
   if (!resMux || !jobq) return;
-#if configNUMBER_OF_CORES > 1
+#ifdef BOARD_HAS_PSRAM
+  if (xTaskCreatePinnedToCoreWithCaps(diagTask, "diag", 8192, nullptr, 1, nullptr, 0,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) ready = true;
+#elif configNUMBER_OF_CORES > 1
   if (xTaskCreatePinnedToCore(diagTask, "diag", 8192, nullptr, 1, nullptr, 0) == pdPASS) ready = true;
 #else
   if (xTaskCreate(diagTask, "diag", 8192, nullptr, 1, nullptr) == pdPASS) ready = true;

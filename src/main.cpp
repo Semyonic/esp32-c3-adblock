@@ -286,11 +286,13 @@ static String htmlEscape(const String& s) {
 
 #include "page.h"   // dashboard HTML (PROGMEM) — see issue #6
 #include "diag.h"   // one-shot censorship diagnostic (own task, one at a time)
+#include "proxy.h"  // HTTP CONNECT proxy with ClientHello fragmentation
 
 static void handleStats() {
   uint32_t up = millis() / 1000;
   char ut[24]; snprintf(ut, sizeof(ut), "%lud %luh %lum", up/86400, (up%86400)/3600, (up%3600)/60);
   DnsStats ds = dnsStats();
+  PxStats px = proxyStats();
   // One allocation instead of ~700 reallocs; the extra room is the recent-block feed.
   String j; j.reserve(1024 + numClients * 170 + numCustom * 48 + 24 * 80);
   // The dashboard names the board from this rather than hard-coding one, so an
@@ -307,6 +309,9 @@ static void handleStats() {
              ",\"blocking\":" + (blockingOn ? "true" : "false") +
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
              ",\"defcreds\":" + ((strcmp(WEB_PASS, "CHANGE_ME_WEB_PASSWORD") == 0 || strcmp(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") == 0) ? "true" : "false") +
+             ",\"pxtotal\":" + String((unsigned long)px.total) + ",\"pxactive\":" + String((unsigned long)px.active) +
+             ",\"pxfail\":" + String((unsigned long)px.failed) + ",\"pxsplit\":" + String((unsigned long)px.splits) +
+             ",\"pxbytes\":" + String((unsigned long)px.bytes) +
              ",\"hits\":" + dnsHitSeq() +      // monotonic: lets the page tell new blocks from ones it has already drawn
              ",\"recent\":[";
   // The names that were actually sinkholed, newest first — the dashboard feed.
@@ -364,6 +369,12 @@ static void handleDiagJson() {
   }
   j += "}";
   web.send(200, "application/json", j);
+}
+
+// The PAC is the only thing a client needs to point at this box: only the names
+// in proxy.cpp's list take the proxy, everything else stays direct.
+static void handlePac() {
+  web.send(200, "application/x-ns-proxy-autoconfig", proxyPac());
 }
 // Upstream shipped every state-changing/OTA endpoint with zero authentication —
 // anyone on the LAN could reflash firmware or rewrite the blocklist. Gate them.
@@ -708,11 +719,13 @@ void setup() {
 
   dnsStart(DNS_PORT);
   diagInit();   // starts the one-shot diagnostic task; it waits for a request
+  proxyInit();  // CONNECT proxy :8080, one ClientHello split per connection
   { const char* hdrs[] = { CSRF_HEADER }; web.collectHeaders(hdrs, 1); }  // needed for requireAuth()'s CSRF check
   web.on("/", []() { web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
   web.on("/diag", handleDiagStart);
   web.on("/diag.json", handleDiagJson);
+  web.on("/proxy.pac", handlePac);
   web.on("/ban", handleBan);
   web.on("/label", []() {                    // /label?mac=aa:bb:..&n=name (n empty = clear)
     if (!requireAuth()) return;

@@ -149,6 +149,11 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
  </div>
  <div class=note id=dgres>DNS, TCP 443 ve TLS SNI katmanlarını ayrı ayrı dener.</div>
 </div>
+<h2>🌐 Sansür proxy</h2>
+<div class="glass hpad">
+ <div class=note>PAC: <a id=pacurl href="/proxy.pac">/proxy.pac</a> · yalnızca listedeki domainler proxy'ye gider.</div>
+ <div class=note id=pxs>—</div>
+</div>
 <footer><span id=foot>AdBlock</span> · <span id=demo></span>3 sn'de bir yenilenir</footer>
 </div><script>
 const H={'X-Requested-With':'c3-adblock'}
@@ -216,7 +221,7 @@ function icon(name){
 function togglePause(){fetch(stpill.className=='pill off'?'/resume':'/pause?s='+pausedur.value,{headers:H}).then(load)}
 async function load(){let s;try{s=await(await fetch('/stats.json')).json()}catch(e){demo.textContent='demo — ';render(demodata());return}
 render(s)}
-function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,hits:9,recent:[{n:'doubleclick.net',c:'192.168.1.7',s:2},{n:'googlesyndication.com',c:'192.168.1.7',s:5},{n:'graph.facebook.com',c:'192.168.1.23',s:9},{n:'app-measurement.com',c:'192.168.1.42',s:14},{n:'analytics.tiktok.com',c:'192.168.1.42',s:20},{n:'adservice.google.com',c:'192.168.1.7',s:31},{n:'criteo.com',c:'192.168.1.77',s:44},{n:'telemetry.microsoft.com',c:'192.168.1.10',s:58},{n:'doubleclick.net',c:'192.168.1.23',s:71}],chits:331204,dot:true,dotq:180893,lost:0,lostto:0,lostshed:0,txfailreply:0,txfailquery:0,txerrreply:0,txerrquery:0,dotdrop:0,doths:3,dothsms:1542,psram:5161372,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
+function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,hits:9,recent:[{n:'doubleclick.net',c:'192.168.1.7',s:2},{n:'googlesyndication.com',c:'192.168.1.7',s:5},{n:'graph.facebook.com',c:'192.168.1.23',s:9},{n:'app-measurement.com',c:'192.168.1.42',s:14},{n:'analytics.tiktok.com',c:'192.168.1.42',s:20},{n:'adservice.google.com',c:'192.168.1.7',s:31},{n:'criteo.com',c:'192.168.1.77',s:44},{n:'telemetry.microsoft.com',c:'192.168.1.10',s:58},{n:'doubleclick.net',c:'192.168.1.23',s:71}],chits:331204,dot:true,dotq:180893,lost:0,lostto:0,lostshed:0,txfailreply:0,txfailquery:0,txerrreply:0,txerrquery:0,dotdrop:0,doths:3,dothsms:1542,psram:5161372,pxtotal:0,pxactive:0,pxfail:0,pxsplit:0,pxbytes:0,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
 // The counters that say whether the DNS engine itself is dropping anything.
 // Every one of these should stay at zero; when one climbs, it names the stage.
 function health(s){
@@ -266,6 +271,8 @@ if(prev){
  brand.textContent=nm;foot.textContent=nm;document.title=nm}
 prev={b:s.blocked,t:Date.now()}
 kD.textContent=fmt(s.domains);kR.textContent=s.rssi+' dBm';kT.textContent=s.temp+' °C';kH.textContent=Math.round(s.heap/1024)+' KB';kU.textContent=s.uptime
+pxs.textContent=(s.pxactive||0)+' açık · '+(s.pxtotal||0)+' toplam · '+(s.pxfail||0)+' hata · '+fmt(s.pxbytes||0)+' bayt'
+pacurl.textContent='http://'+s.ip+'/proxy.pac';pacurl.href='http://'+s.ip+'/proxy.pac'
 kC.textContent=s.allowed?Math.round(s.chits/s.allowed*100)+'%':'—';kCn.textContent=fmt(s.chits||0)+' yanıt bellekten'
 health(s);trackers(s)
 kE.textContent=s.dot?'açık':'kapalı';kE.style.color=s.dot?'#34d399':'#fbbf24'
