@@ -141,10 +141,13 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
  <div class=hx id=hx></div>
  <div class=note id=hxnote></div>
 </div>
-<h2>🩺 Motor sağlığı</h2>
+<h2>🩺 Sansür teşhisi</h2>
 <div class="glass hpad">
- <div class=hx id=hx></div>
- <div class=note id=hxnote></div>
+ <div style=display:flex;gap:8px;flex-wrap:wrap;align-items:center>
+  <input id=cd placeholder="discord.com" maxlength=253 style="flex:1;min-width:180px">
+  <button class=grad onclick=diagRun()>Test et</button>
+ </div>
+ <div class=note id=dgres>DNS, TCP 443 ve TLS SNI katmanlarını ayrı ayrı dener.</div>
 </div>
 <footer><span id=foot>AdBlock</span> · <span id=demo></span>3 sn'de bir yenilenir</footer>
 </div><script>
@@ -292,5 +295,34 @@ blf.onchange=async e=>{let f=e.target.files[0];if(!f)return;upmsg.textContent='y
 let fd=new FormData();fd.append('f',f)
 try{let r=await fetch('/upload',{method:'POST',headers:H,body:fd});upmsg.textContent=r.ok?'✓ güncellendi':'✗ '+await r.text()}catch(_){upmsg.textContent='✗ yükleme başarısız'}
 blf.value='';setTimeout(load,600)}
+let dgTimer=null,dgN=0;
+async function diagRun(){
+ const d=cd.value.trim();if(!d)return;
+ dgres.textContent='test ediliyor…';dgN=0;
+ try{
+  const r=await fetch('/diag?d='+encodeURIComponent(d));
+  const j=await r.json();
+  if(j.state=='busy'){dgres.textContent='önceki test bitmedi; birkaç saniye sonra tekrar dene';return}
+  if(j.state=='error'){dgres.textContent=j.note||'test başlamadı';return}
+  clearInterval(dgTimer);dgTimer=setInterval(diagPoll,700);diagPoll();
+ }catch(e){dgres.textContent='istek gitmedi'}
+}
+async function diagPoll(){
+ try{
+  const j=await(await fetch('/diag.json')).json();
+  if(j.state=='running'){if(++dgN>60){clearInterval(dgTimer);dgres.textContent='zaman aşımı'};return}
+  clearInterval(dgTimer);renderDiag(j);
+ }catch(e){clearInterval(dgTimer);dgres.textContent='sonuç okunamadı'}
+}
+function renderDiag(j){
+ if(j.state!='done'){dgres.textContent=j.note||'test tamamlanamadı';return}
+ const v={dns:'DNS yanıtı farklı',ip:'IP engeli',sni:'SNI/DPI engeli',clean:'temiz',local:'yerel blok',nodata:'A kaydı yok',error:'hata'}[j.verdict]||j.verdict;
+ const ip=x=>x&&x!='0.0.0.0'?x:'—';
+ dgres.innerHTML='<b>'+esc(j.domain)+'</b> · '+esc(v)+'<br>'+
+  'ISP DNS: '+esc(ip(j.isp))+' · DoT: '+esc(ip(j.trusted))+(j.dot?' (şifreli)':' (düz)')+'<br>'+
+  'TCP 443: '+(j.tcp?'açık '+j.tcpms+' ms':'kapalı')+' · TLS SNI: '+(j.tls?'geçti '+j.tlsms+' ms':'düştü')+'<br>'+
+  '<span style="color:#94a3b8">'+esc(j.note||'')+'</span>'+
+  (j.tlserr?'<br><span style="color:#fca5a5">'+esc(j.tlserr)+'</span>':'');
+}
 load();setInterval(load,3000);
 </script></body></html>)HTML";

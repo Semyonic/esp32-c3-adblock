@@ -3,6 +3,8 @@
 #include <NetworkClientSecure.h>
 #include <WiFi.h>
 #include <esp_timer.h>
+#include <esp_random.h>
+#include "wire.h"
 #include "lwip/tcpip.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -85,6 +87,58 @@ bool dotSubmit(uint16_t slot, uint16_t gen, const uint8_t* msg, uint16_t len) {
   if (!dotQ || len > sizeof(DotReq::msg)) return false;
   DotReq r; r.t = nowMs(); r.slot = slot; r.gen = gen; r.len = len; memcpy(r.msg, msg, len);
   return xQueueSend(dotQ, &r, 0) == pdTRUE;
+}
+
+// One-shot lookup for the diagnostic. Its own client, because the shared `cli`
+// belongs to the DNS task and a button press must not be able to stall it.
+bool dotResolve(const char* name, uint32_t* ip, uint8_t* rcode, uint32_t timeoutMs) {
+  if (!name || !*name || !ip || !rcode) return false;
+  uint8_t q[512];
+  uint16_t id = (uint16_t)esp_random();
+  int qlen = wire::buildQuery(name, q, sizeof(q), id);
+  if (qlen <= 0) return false;
+  static const uint8_t a1[] = {DOT_IP}, a2[] = {DOT_IP2};
+  for (int attempt = 0; attempt < 2; attempt++) {
+    const uint8_t* a = attempt ? a2 : a1;
+    NetworkClientSecure c;
+    c.setHandshakeTimeout(6);
+    c.setTimeout(4);
+    if (!c.connect(IPAddress(a[0], a[1], a[2], a[3]), 853, DOT_HOST, DOT_ROOT_CA, nullptr, nullptr)) {
+      c.stop(); continue;
+    }
+    c.setNoDelay(true);
+    uint8_t frame[2 + sizeof(q)];
+    frame[0] = (uint8_t)(qlen >> 8); frame[1] = (uint8_t)qlen;
+    memcpy(frame + 2, q, qlen);
+    size_t total = (size_t)qlen + 2, off = 0;
+    while (off < total) {
+      int w = c.write(frame + off, total - off);
+      if (w <= 0) break;
+      off += (size_t)w;
+    }
+    if (off != total) { c.stop(); continue; }
+    uint8_t hdr[2]; int got = 0; uint32_t deadline = nowMs() + timeoutMs;
+    while (got < 2 && (int32_t)(nowMs() - deadline) < 0) {
+      if (!c.connected() && !c.available()) break;
+      int n = c.read(hdr + got, 2 - got);
+      if (n > 0) got += n; else vTaskDelay(1);
+    }
+    if (got != 2) { c.stop(); continue; }
+    int len = hdr[0] << 8 | hdr[1];
+    if (len < 12 || len > 1536) { c.stop(); continue; }
+    uint8_t r[1536]; int rn = 0;
+    while (rn < len && (int32_t)(nowMs() - deadline) < 0) {
+      if (!c.connected() && !c.available()) break;
+      int n = c.read(r + rn, len - rn);
+      if (n > 0) rn += n; else vTaskDelay(1);
+    }
+    c.stop();
+    if (rn != len || (r[0] << 8 | r[1]) != id) continue;
+    if (!wire::walkTtl(r, len, 0, nullptr)) continue;   // malformed is not an answer
+    wire::firstA(r, len, ip, rcode, nullptr);           // no A = NXDOMAIN/NODATA
+    return true;
+  }
+  return false;
 }
 
 // ---------- task ----------

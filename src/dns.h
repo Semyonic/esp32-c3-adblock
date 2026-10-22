@@ -29,7 +29,8 @@ uint64_t dnsHash(const char* s, size_t n);   // 40-bit FNV-1a, same as tools/bui
 bool     dnsLoadBlocklist(const char* path);
 void     dnsUnloadBlocklist();               // file mode only: close before the file is replaced
 uint32_t dnsBlocklistCount();
-bool     dnsUsesPsram();
+bool dnsUsesPsram();
+bool dnsIsBlocked(const char* name);         // same match the DNS path uses, for diagnostics
 
 // Build a list straight from upstream TEXT sources (hosts / AdGuard syntax),
 // hashing and sorting in PSRAM as the bytes stream in — no prebuilt .bin to host,

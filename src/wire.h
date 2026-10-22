@@ -89,6 +89,64 @@ inline int parseQuestion(const uint8_t* p, int len, char* out,
   return o;
 }
 
+// Build one A/IN question with RD set. Returns the packet length, or 0 when the
+// name cannot be encoded (empty label, label over 63, or no room in `cap`).
+inline int buildQuery(const char* name, uint8_t* out, int cap, uint16_t id) {
+  size_t n = strlen(name);
+  if (n < 1 || n > 253 || cap < 12 + (int)n + 6) return 0;
+  memset(out, 0, 12);
+  out[0] = (uint8_t)(id >> 8); out[1] = (uint8_t)id;
+  out[2] = 0x01;                                 // RD
+  out[5] = 1;                                    // qdcount
+  int o = 12;
+  const char* s = name;
+  for (;;) {
+    const char* dot = strchr(s, '.');
+    size_t l = dot ? (size_t)(dot - s) : strlen(s);
+    if (l == 0 || l > 63) return 0;
+    out[o++] = (uint8_t)l;
+    memcpy(out + o, s, l); o += (int)l;
+    if (!dot) break;
+    s = dot + 1;
+    if (!*s) break;                              // a trailing root dot
+  }
+  out[o++] = 0;
+  out[o++] = 0; out[o++] = 1;                    // A
+  out[o++] = 0; out[o++] = 1;                    // IN
+  return o;
+}
+
+// The first A record in the answer section. rcode and tc come from the header;
+// false means no A (NXDOMAIN, NODATA, truncated or malformed). The address is
+// packed as it appears on the wire, which is what IPAddress(uint32_t) expects.
+inline bool firstA(const uint8_t* p, int len, uint32_t* ip, uint8_t* rcode, bool* tc) {
+  if (len < 12) return false;
+  if (rcode) *rcode = p[3] & 0x0F;
+  if (tc) *tc = (p[2] & 0x02) != 0;
+  int qd = p[4] << 8 | p[5];
+  int an = p[6] << 8 | p[7];
+  int i = 12;
+  for (int k = 0; k < qd; k++) {
+    i = skipName(p, len, i);
+    if (i < 0 || i + 4 > len) return false;
+    i += 4;
+  }
+  for (int k = 0; k < an; k++) {
+    i = skipName(p, len, i);
+    if (i < 0 || i + 10 > len) return false;
+    uint16_t type = p[i] << 8 | p[i + 1];
+    uint16_t rdlen = p[i + 8] << 8 | p[i + 9];
+    if (i + 10 + rdlen > len) return false;
+    if (type == 1 && rdlen == 4) {
+      if (ip) *ip = (uint32_t)p[i + 10] << 24 | (uint32_t)p[i + 11] << 16 |
+                    (uint32_t)p[i + 12] << 8 | p[i + 13];
+      return true;
+    }
+    i += 10 + rdlen;
+  }
+  return false;
+}
+
 // Walk a name and each of its parents down to "a.b", calling listed() on the hash
 // of each. "www." is stripped first, matching how the lists are built.
 template <typename Listed>

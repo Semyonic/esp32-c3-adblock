@@ -554,6 +554,14 @@ static bool nameBlocked(const char* name, int n) {
   return wire::nameBlocked(name, n, [](uint64_t h) { return isCustom(h) || blContains(h); });
 }
 
+// Public form for the diagnostic. The name must already be lowercase, which is
+// what the DNS path produces and what diag.cpp normalizes to.
+bool dnsIsBlocked(const char* name) {
+  size_t n = name ? strlen(name) : 0;
+  if (n < 1 || n > 253) return false;
+  return nameBlocked(name, (int)n);
+}
+
 static int buildBlocked(const uint8_t* q, int qend, uint16_t qtype) {
   memcpy(tx, q, qend);
   tx[2] = 0x80 | (q[2] & 0x01); tx[3] = 0x80;               // QR + mirrored RD, RA, NOERROR

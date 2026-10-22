@@ -285,6 +285,7 @@ static String htmlEscape(const String& s) {
 }
 
 #include "page.h"   // dashboard HTML (PROGMEM) — see issue #6
+#include "diag.h"   // one-shot censorship diagnostic (own task, one at a time)
 
 static void handleStats() {
   uint32_t up = millis() / 1000;
@@ -322,6 +323,46 @@ static void handleStats() {
   j += "],\"custom\":[";
   for (int i = 0; i < numCustom; i++) { j += (i ? "," : ""); j += "\"" + jesc(customDom[i]) + "\""; }
   j += "]}";
+  web.send(200, "application/json", j);
+}
+
+// ---------- censorship diagnostic (read-only GET, no auth) ----------
+// One test at a time. The task does the network work; this handler only queues it
+// and returns, so a slow TLS handshake cannot hold the web server.
+static void handleDiagStart() {
+  String d = web.arg("d"); d.trim();
+  if (!d.length()) { web.send(400, "application/json", "{\"state\":\"error\",\"note\":\"domain yok\"}"); return; }
+  int st = diagStart(d.c_str());
+  if (st < 0) { web.send(400, "application/json", "{\"state\":\"error\",\"note\":\"geçersiz domain\"}"); return; }
+  if (!st) { web.send(200, "application/json", "{\"state\":\"busy\"}"); return; }
+  web.send(200, "application/json", "{\"state\":\"running\"}");
+}
+
+static void handleDiagJson() {
+  DiagResult r; uint8_t st = diagGet(&r);
+  static const char* names[] = {"idle", "running", "done", "error"};
+  String j; j.reserve(512);
+  j = "{\"state\":\"";
+  j += st <= DIAG_ERROR ? names[st] : "error";
+  j += "\"";
+  if (st == DIAG_DONE || st == DIAG_ERROR) {
+    j += ",\"domain\":\"" + jesc(r.domain) + "\"";
+    j += ",\"verdict\":\"" + jesc(r.verdict) + "\"";
+    j += ",\"note\":\"" + jesc(r.note) + "\"";
+    if (r.tlsErr[0]) j += ",\"tlserr\":\"" + jesc(r.tlsErr) + "\"";
+    IPAddress isp(r.ispIp), tr(r.trustedIp);
+    j += ",\"isp\":\"" + (r.ispIp ? isp.toString() : String("")) + "\"";
+    j += ",\"trusted\":\"" + (r.trustedIp ? tr.toString() : String("")) + "\"";
+    j += ",\"dot\":" + String(r.dotUsed ? "true" : "false");
+    j += ",\"poisoned\":" + String(r.poisoned ? "true" : "false");
+    j += ",\"local\":" + String(r.localBlocked ? "true" : "false");
+    j += ",\"tcp\":" + String(r.tcpOk ? "true" : "false");
+    j += ",\"tls\":" + String(r.tlsOk ? "true" : "false");
+    j += ",\"tcpms\":" + String((unsigned)r.tcpMs);
+    j += ",\"tlsms\":" + String((unsigned)r.tlsMs);
+    j += ",\"ms\":" + String((unsigned long)r.totalMs);
+  }
+  j += "}";
   web.send(200, "application/json", j);
 }
 // Upstream shipped every state-changing/OTA endpoint with zero authentication —
@@ -666,9 +707,12 @@ void setup() {
                     "device on a network you don't fully control.");
 
   dnsStart(DNS_PORT);
+  diagInit();   // starts the one-shot diagnostic task; it waits for a request
   { const char* hdrs[] = { CSRF_HEADER }; web.collectHeaders(hdrs, 1); }  // needed for requireAuth()'s CSRF check
   web.on("/", []() { web.send_P(200, "text/html", PAGE); });
   web.on("/stats.json", handleStats);
+  web.on("/diag", handleDiagStart);
+  web.on("/diag.json", handleDiagJson);
   web.on("/ban", handleBan);
   web.on("/label", []() {                    // /label?mac=aa:bb:..&n=name (n empty = clear)
     if (!requireAuth()) return;

@@ -18,5 +18,11 @@ void dotNoteClient();                                      // a client queried: 
 struct DotStats { uint32_t queries, replies, fails, handshakes, hsMs, dropped; bool up; };
 DotStats dotStats();
 
+// One-shot DoT A lookup for the diagnostic. The long-lived link above is never
+// touched: a second connection costs one handshake, so a button press cannot
+// disturb the DNS path. rcode is the DNS code when a reply arrived; ip stays 0
+// for NXDOMAIN/NODATA. False means the link or the reply could not be read.
+bool dotResolve(const char* name, uint32_t* ip, uint8_t* rcode, uint32_t timeoutMs = 8000);
+
 // Implemented in dns.cpp, called from the lwIP thread via tcpip_callback.
 void dotDeliver(uint16_t slot, uint16_t gen, const uint8_t* reply, int len);

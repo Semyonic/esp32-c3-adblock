@@ -152,6 +152,47 @@ static void test_walk_ttl() {
   check(!wire::walkTtl(p.data(), (int)p.size(), 0, &mn), "refuses rdata that overruns the packet");
 }
 
+static void test_build_query() {
+  puts("buildQuery");
+  uint8_t q[512];
+  int n = wire::buildQuery("example.com", q, sizeof(q), 0x1234);
+  check(n == 29, "encodes a two-label name");
+  check(q[0] == 0x12 && q[1] == 0x34 && q[2] == 0x01 && q[5] == 1, "header, RD and qdcount");
+  check(q[12] == 7 && memcmp(q + 13, "example", 7) == 0 &&
+        q[20] == 3 && memcmp(q + 21, "com", 3) == 0 && q[24] == 0, "labels and root");
+  check(q[25] == 0 && q[26] == 1 && q[27] == 0 && q[28] == 1, "A/IN question");
+  check(wire::buildQuery("example.com.", q, sizeof(q), 1) == 29, "accepts a trailing root dot");
+  check(wire::buildQuery("a..b", q, sizeof(q), 1) == 0, "refuses an empty label");
+  check(wire::buildQuery("example.com", q, 28, 1) == 0, "refuses a buffer one byte short");
+  check(wire::buildQuery("", q, sizeof(q), 1) == 0, "refuses an empty name");
+}
+
+static void test_first_a() {
+  puts("firstA");
+  uint32_t ip = 0; uint8_t rc = 0; bool tc = true;
+  auto p = reply(300, 1);
+  check(wire::firstA(p.data(), (int)p.size(), &ip, &rc, &tc) && ip == 0x0A000001 && rc == 0 && !tc,
+        "finds the A record, address and rcode");
+
+  auto nx = query("example.com");
+  nx[2] = 0x81; nx[3] = 0x83;
+  check(!wire::firstA(nx.data(), (int)nx.size(), &ip, &rc, &tc) && rc == 3, "NXDOMAIN has no A");
+
+  auto cn = query("www.example.com");
+  cn[2] = 0x81; cn[3] = 0x80; cn[6] = 0; cn[7] = 2;
+  uint8_t cname[] = {0xC0,0x0C, 0,5, 0,1, 0,0,0,60, 0,9, 3,'c','d','n',3,'c','o','m',0};
+  cn.insert(cn.end(), cname, cname + sizeof(cname));
+  uint8_t arec[] = {0xC0,0x0C, 0,1, 0,1, 0,0,0,60, 0,4, 93,184,216,34};
+  cn.insert(cn.end(), arec, arec + sizeof(arec));
+  check(wire::firstA(cn.data(), (int)cn.size(), &ip, &rc, &tc) && ip == 0x5DB8D822,
+        "skips a CNAME and returns the A that follows");
+
+  auto bad = reply(300, 1);
+  bad[bad.size() - 6] = 0xFF; bad[bad.size() - 5] = 0xFF;
+  check(!wire::firstA(bad.data(), (int)bad.size(), &ip, &rc, &tc), "refuses rdata that overruns");
+  check(!wire::firstA(p.data(), 11, &ip, &rc, &tc), "refuses a packet too short for a header");
+}
+
 static void test_name_blocked() {
   puts("nameBlocked");
   const char* listed[] = {"ads.example", "tracker.io"};
@@ -242,6 +283,7 @@ static void test_fuzz() {
   uint32_t seed = 1;
   auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return (seed >> 16) & 0xFFFF; };
   char name[256]; uint16_t qt, qc; int qend; uint32_t ttl; uint64_t h;
+  uint32_t ip; uint8_t rc; bool tc; uint8_t q[512];
   for (int iter = 0; iter < 200000; iter++) {
     int len = 1 + (int)(rnd() % 600);
     std::vector<uint8_t> p((size_t)len);
@@ -252,6 +294,8 @@ static void test_fuzz() {
     }
     wire::parseQuestion(p.data(), len, name, &qt, &qc, &qend);
     wire::walkTtl(p.data(), len, rnd() % 1000, &ttl);
+    wire::buildQuery(name, q, sizeof(q), (uint16_t)rnd());
+    wire::firstA(p.data(), len, &ip, &rc, &tc);
     wire::skipName(p.data(), len, (int)(rnd() % (unsigned)len));
     wire::contains(p.data(), (uint32_t)(len / 5), ((uint64_t)rnd() << 16) | rnd());
 
@@ -272,6 +316,8 @@ int main() {
   test_skip_name();
   test_parse_question();
   test_walk_ttl();
+  test_build_query();
+  test_first_a();
   test_name_blocked();
   test_parse_list_line();
   test_contains();
