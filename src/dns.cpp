@@ -346,12 +346,13 @@ static bool isBanned(uint32_t ip) {
 }
 
 // ---------- stats ----------
-static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0, stTxFail = 0;
+static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0;
+static volatile uint32_t stTxFailReply = 0, stTxFailQuery = 0;
 static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
 DnsStats dnsStats() {
   DotStats d = dotStats();
-  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFail, d.up };
+  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFailReply, stTxFailQuery, d.up };
 }
 
 // ---------- answer cache ----------
@@ -387,9 +388,12 @@ static uint8_t rx[1536], ux[1536], tx[1536];
 // never gets an answer, and that is invisible from outside the box.
 static void sendRaw(udp_pcb* pcb, const uint8_t* d, int len, const ip_addr_t* to, uint16_t port) {
   pbuf* pb = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
-  if (!pb) { stTxFail++; return; }
+  // Counted per direction, because the consequences differ: a query lwIP refuses
+  // to forward is resent by expireTick 350 ms later, while a reply it refuses is
+  // an answer the client never gets and must ask for again.
+  if (!pb) { if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++; return; }
   memcpy(pb->payload, d, len);
-  if (udp_sendto(pcb, pb, to, port) != ERR_OK) stTxFail++;
+  if (udp_sendto(pcb, pb, to, port) != ERR_OK) { if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++; }
   pbuf_free(pb);
 }
 

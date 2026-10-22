@@ -35,19 +35,34 @@ dns.quad9.net. Reference resolver for every comparison: 9.9.9.9 direct.
 
 ## Loss, measured against the device's own counters
 
-One clean window on the shipping build, 85 q/s for 180 s:
+Counters are cumulative from boot, so the clearest reading is one device lifetime.
+From a fresh boot, then 180 s of mixed load:
 
-```
-this machine sent 15360, device counted 15360 from it
-device internal lost +0, txfail +0, dropped replies +0
-client-visible loss 2        (replies lost on the WiFi return path)
-heap 88944 -> 88348, psram flat
-```
+| | at boot (20 queries) | after 22,880 more |
+|---|---|---|
+| Replies lwIP refused to send | 1 | **1** — did not recur |
+| Queries lwIP refused to send | 0 | **0** |
+| Internal loss (shed or timed out) | 0 | **0** |
+| Replies with no hand-off slot | 0 | **0** |
+| Client-visible loss | — | **0** |
 
-Five idle minutes, only the household's own traffic (172 queries): 0 lost.
+That single refused reply is a boot-time event, not a load effect: the first
+packet to a client whose MAC is not yet in the ARP cache is rejected by lwIP,
+the stub resolver retries, and once the entry exists it never happens again.
+The counter is split by direction precisely because the two cases differ — a
+refused query is resent 350 ms later, a refused reply is not.
 
-Longer runs on the shipping build: 30,720 queries over 4 min and 45,600 over
-5 min, both with the firmware's internal loss counter at 0.
+Earlier in the same session a 180 s window at 85 q/s showed the device counting
+all 15,360 queries this machine sent, with internal loss, send failures and
+dropped replies all at 0; the 2 the client missed were replies lost on the WiFi
+return path. Five idle minutes of household traffic (172 queries): 0 lost.
+Longer runs: 30,720 queries over 4 min, 38,440 over 5 min, 45,600 over 5 min —
+internal loss 0 in every one.
+
+Where a nonzero internal count does appear over a long mixed lifetime (10 in
+38,814), it tracks queries from the other hosts on the LAN whose upstream never
+answered inside 1.5 s; the reference resolver drops a comparable share when
+queried directly.
 
 ## Capacity — the ceiling is the radio
 

@@ -52,7 +52,7 @@ struct DnsStats {
   uint32_t blocked, allowed, cacheHits, upstreamLost, prefetches;
   uint32_t dotQueries, dotHandshakes, dotHsMs;   // queries sent encrypted; TLS link cost
   uint32_t dotDropped;                           // replies that found no free hand-off slot
-  uint32_t txFailed;                             // packets lwIP would not send
+  uint32_t txFailedReply, txFailedQuery;         // packets lwIP would not send, by direction
   bool dotUp;
 };
 DnsStats dnsStats();
