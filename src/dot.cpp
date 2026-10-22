@@ -50,6 +50,19 @@ static const int      QDEPTH      = 12;   // the small boards have no DRAM to sp
 static const int      NSLOTS      = 4;
 #endif
 
+// Task placement below depends on this being the real core count, not a macro
+// that quietly expanded to nothing. Checked per target at compile time so a board
+// can never be handed a core it does not have — the kind of mistake that only
+// shows up as a boot loop on hardware you may not have on the desk.
+#ifndef configNUMBER_OF_CORES
+#error "configNUMBER_OF_CORES is not visible here; task placement would be a guess"
+#endif
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32H2)
+static_assert(configNUMBER_OF_CORES == 1, "this target is single-core");
+#elif defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
+static_assert(configNUMBER_OF_CORES == 2, "this target is dual-core");
+#endif
+
 struct DotReq { uint32_t t; uint16_t slot, gen, len; uint8_t msg[512]; };   // t = submitted at
 static QueueHandle_t dotQ;
 
@@ -228,10 +241,13 @@ void dotInit() {
   dotQ = xQueueCreate(QDEPTH, sizeof(DotReq));
   // The C3 is single-core, and FreeRTOS asserts xCoreID < 1 there (the string is
   // in libfreertos.a, with assertions compiled in), so pinning to core 1 aborts
-  // at boot. Pin only where core 1 exists; elsewhere let the scheduler place it.
-#if CONFIG_FREERTOS_UNICORE
-  xTaskCreate(dotTask, "dot", 8192, nullptr, 6, nullptr);
-#else
+  // at boot. Decide from configNUMBER_OF_CORES, which FreeRTOS.h always defines
+  // — and note the test is "> 1", so if it ever stopped being visible the build
+  // would fall to the unpinned call, which is correct everywhere, rather than to
+  // a pin that bricks a single-core board.
+#if configNUMBER_OF_CORES > 1
   xTaskCreatePinnedToCore(dotTask, "dot", 8192, nullptr, 6, nullptr, 1);
+#else
+  xTaskCreate(dotTask, "dot", 8192, nullptr, 6, nullptr);
 #endif
 }
