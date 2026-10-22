@@ -168,10 +168,17 @@ function owner(d){for(const o of OWN) if(o[0].test(d)) return {n:o[1],c:o[2],i:o
 // difference tells us exactly how many of them we have not counted yet.
 function trackers(s){
  if(!s.recent) return
+ if(s.hits<seen){cnt={};last={};seen=0}   // the device rebooted: those counts are a past run's
  const fresh=seen?Math.min(s.hits-seen,s.recent.length):s.recent.length
  for(let i=fresh-1;i>=0;i--){const r=s.recent[i];cnt[r.n]=(cnt[r.n]||0)+1;last[r.n]=Date.now()-r.s*1000}
  seen=s.hits
- const top=Object.entries(cnt).sort((a,b)=>b[1]-a[1])
+ // One key per hostname ever blocked would grow for as long as the tab stays
+ // open, and only the busiest ten are ever drawn. Keep those, drop the tail.
+ const keys=Object.keys(cnt)
+ if(keys.length>96) for(const k of keys.sort((a,b)=>cnt[b]-cnt[a]||last[b]-last[a]).slice(64)){delete cnt[k];delete last[k]}
+ // Equal counts are common, so break the tie on recency: a domain blocked a
+// moment ago is the one worth showing.
+ const top=Object.entries(cnt).sort((a,b)=>b[1]-a[1]||last[b[0]]-last[a[0]])
  if(!top.length){corp.innerHTML='';tags.innerHTML='<span style="border-color:rgba(255,255,255,.12);color:#64748b">henüz engellenen yok</span>';return}
  const g={}
  for(const e of top){const o=owner(e[0]);if(!g[o.n])g[o.n]={v:0,c:o.c,i:o.i,n:0};g[o.n].v+=e[1];g[o.n].n++}

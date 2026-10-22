@@ -157,6 +157,7 @@ To finish the job on real silicon:
 
 ```bash
 pio run -e c3 -t upload            # or -e esp32dev
+node tools/test_page.js               # dashboard logic, no device needed
 python3 tools/dnscheck.py <device-ip>
 python3 tools/dnsbench.py <device-ip> --soak 300
 ```

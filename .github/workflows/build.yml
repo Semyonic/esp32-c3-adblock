@@ -53,6 +53,10 @@ jobs:
           c++ -std=c++17 -Wall -Werror -g -fsanitize=address,undefined \
               -fno-sanitize-recover=all -I src -o /tmp/test_wire_san tools/test_wire.cpp
           /tmp/test_wire_san
+      - name: Dashboard tests
+        # The dashboard's live-tracker card keeps state across polls, so a reboot
+        # or a long-open tab can break it without changing how a screenshot looks.
+        run: node tools/test_page.js
       - name: Tools compile
         # dnsbench.py and dnscheck.py need a live device, so CI can only check
         # that they are not broken on the way in.
