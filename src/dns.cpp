@@ -327,12 +327,12 @@ static bool isBanned(uint32_t ip) {
 }
 
 // ---------- stats ----------
-static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0;
+static volatile uint32_t stBlocked = 0, stAllowed = 0, stHits = 0, stLost = 0, stPrefetch = 0, stDot = 0, stTxFail = 0;
 static QueueHandle_t evq;
 bool dnsPollEvent(DnsEvent* e) { return evq && xQueueReceive(evq, e, 0) == pdTRUE; }
 DnsStats dnsStats() {
   DotStats d = dotStats();
-  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, d.up };
+  return { stBlocked, stAllowed, stHits, stLost, stPrefetch, stDot, d.handshakes, d.hsMs, d.dropped, stTxFail, d.up };
 }
 
 // ---------- answer cache ----------
@@ -364,10 +364,13 @@ static ip_addr_t upAddr[2];
 static bool timerArmed = false;
 static uint8_t rx[1536], ux[1536], tx[1536];
 
+// Counted, not ignored: a failed pbuf allocation or send is a query that quietly
+// never gets an answer, and that is invisible from outside the box.
 static void sendRaw(udp_pcb* pcb, const uint8_t* d, int len, const ip_addr_t* to, uint16_t port) {
-  pbuf* pb = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM); if (!pb) return;
+  pbuf* pb = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+  if (!pb) { stTxFail++; return; }
   memcpy(pb->payload, d, len);
-  udp_sendto(pcb, pb, to, port);
+  if (udp_sendto(pcb, pb, to, port) != ERR_OK) stTxFail++;
   pbuf_free(pb);
 }
 
@@ -623,7 +626,12 @@ static void expireTick(void*) {
     uint32_t age = now - p->sentMs;
     if (age >= GIVEUP_MS) { stLost++; release(p); continue; }   // may dispatch a waiter
     if (p->port == PORT_DOT && p->tries == 1 && age >= RETRY_MS) {
-      p->tries = 2;                            // TLS link stalled: retry this one over UDP
+      // TLS is taking too long: move this query to the plaintext path. It has to
+      // join the waiting list when every port is busy -- leaving it marked PORT_DOT
+      // meant release() never considered it and it simply died at the timeout,
+      // which is where the device's own 0.06% loss under steady miss load came from.
+      p->tries = 2;
+      p->port = PORT_WAIT;
       for (int i = 0; i < UP_PORTS; i++) if (upPcb[i] && !portOwner[i]) { dispatch(p, i); break; }
     }
     if (p->port >= 0 && p->tries == 1 && age >= RETRY_MS) {

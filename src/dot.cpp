@@ -226,5 +226,12 @@ static void dotTask(void*) {
 
 void dotInit() {
   dotQ = xQueueCreate(QDEPTH, sizeof(DotReq));
+  // The C3 is single-core, and FreeRTOS asserts xCoreID < 1 there (the string is
+  // in libfreertos.a, with assertions compiled in), so pinning to core 1 aborts
+  // at boot. Pin only where core 1 exists; elsewhere let the scheduler place it.
+#if CONFIG_FREERTOS_UNICORE
+  xTaskCreate(dotTask, "dot", 8192, nullptr, 6, nullptr);
+#else
   xTaskCreatePinnedToCore(dotTask, "dot", 8192, nullptr, 6, nullptr, 1);
+#endif
 }
