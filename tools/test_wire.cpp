@@ -233,6 +233,40 @@ static void test_contains() {
   check(misses == 1000, "reports no false positives over a thousand absent keys");
 }
 
+// Random input through every entry point. On its own this only proves nothing
+// crashes; built with -fsanitize=address,undefined (as CI does) it proves the
+// parser stays inside its buffers and does nothing undefined, which matters most
+// here because these bytes arrive from anyone on the network.
+static void test_fuzz() {
+  puts("fuzz (meaningful under -fsanitize=address,undefined)");
+  uint32_t seed = 1;
+  auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return (seed >> 16) & 0xFFFF; };
+  char name[256]; uint16_t qt, qc; int qend; uint32_t ttl; uint64_t h;
+  for (int iter = 0; iter < 200000; iter++) {
+    int len = 1 + (int)(rnd() % 600);
+    std::vector<uint8_t> p((size_t)len);
+    for (int i = 0; i < len; i++) p[(size_t)i] = (uint8_t)rnd();
+    if (iter % 4 == 0 && len > 12) {              // sometimes start from a plausible header
+      p[2] = 0x01; p[3] = 0x00; p[4] = 0; p[5] = 1;
+      p[6] = 0; p[7] = (uint8_t)(rnd() % 8);
+    }
+    wire::parseQuestion(p.data(), len, name, &qt, &qc, &qend);
+    wire::walkTtl(p.data(), len, rnd() % 1000, &ttl);
+    wire::skipName(p.data(), len, (int)(rnd() % (unsigned)len));
+    wire::contains(p.data(), (uint32_t)(len / 5), ((uint64_t)rnd() << 16) | rnd());
+
+    char line[600];                                // the list parser writes in place
+    int ll = (int)(rnd() % 550);
+    for (int i = 0; i < ll; i++) {
+      unsigned r = rnd() % 70;
+      line[i] = r < 60 ? (char)("abcdefghijklmnopqrstuvwxyz0123456789.-_|@#!/[]^$ \t:"[r % 51]) : (char)rnd();
+    }
+    line[ll] = 0;
+    wire::parseListLine(line, ll, &h);
+  }
+  check(true, "200,000 random inputs through every entry point without a fault");
+}
+
 int main() {
   test_hash();
   test_skip_name();
@@ -241,6 +275,7 @@ int main() {
   test_name_blocked();
   test_parse_list_line();
   test_contains();
+  test_fuzz();
   printf("\n%s\n", failures ? "FAILURES" : "all wire tests passed");
   return failures ? 1 : 0;
 }

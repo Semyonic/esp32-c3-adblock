@@ -45,7 +45,14 @@ jobs:
       - name: Wire-format tests
         # src/wire.h is the parsing and matching logic every target shares, with no
         # platform dependencies, so these run here and cover all of them at once.
-        run: c++ -std=c++17 -Wall -Werror -I src -o /tmp/test_wire tools/test_wire.cpp && /tmp/test_wire
+        # The sanitized build is the one that matters: these bytes come off the
+        # network, so the fuzz pass has to prove no overrun and nothing undefined.
+        run: |
+          c++ -std=c++17 -Wall -Werror -I src -o /tmp/test_wire tools/test_wire.cpp
+          /tmp/test_wire
+          c++ -std=c++17 -Wall -Werror -g -fsanitize=address,undefined \
+              -fno-sanitize-recover=all -I src -o /tmp/test_wire_san tools/test_wire.cpp
+          /tmp/test_wire_san
       - name: Tools compile
         # dnsbench.py and dnscheck.py need a live device, so CI can only check
         # that they are not broken on the way in.
