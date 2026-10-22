@@ -238,6 +238,17 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
   connects (`while(!Serial)` helps).
 - DNS clients add an **EDNS OPT** record; a blocked reply must contain only the
   question + answer (ANCOUNT=1, NSCOUNT=ARCOUNT=0) or it's malformed.
+- A public resolver **hangs up on a DoT connection you keep busy**, and that is
+  its policy, not a bug on this end — every close in a 10-minute run was logged
+  as "closed by the resolver", none initiated here. Measured against query rate,
+  over 2 minutes each: 5/s → 0 closes, 20/s → 2, 60/s → 4, 90/s → 7. No query is
+  lost at any of those rates; a reconnect costs ~1.6 s (software ECDSA P-384) and
+  queries take the plaintext path meanwhile. A household resolves a few names a
+  second, so the link simply stays up.
+- Load-test from a **bounded pool of sockets**. Spawning a thread per query makes
+  the *test machine* drop answers — one sweep showed 10,049 "losses" at 140 q/s
+  that vanished (0 lost, and the device's own counters agreed) when the same rate
+  was driven from eight reused workers.
 
 ## Done / how it could grow
 
