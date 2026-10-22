@@ -159,6 +159,27 @@ The dashboard at **http://c3adblock.local** does it all:
   pio run -t upload --upload-port c3adblock.local --upload-protocol espota
   ```
 
+## What the dashboard shows
+
+The top-right card answers **who is tracking you**, not just how many lookups were
+refused. Hostnames are grouped by the company that owns them — `doubleclick.net`,
+`googlesyndication.com` and `app-measurement.com` are one company asking three ways —
+with a bar per company, and under it a tag cloud of the individual hostnames sized by
+how often each was blocked and coloured by how recently.
+
+The feed comes from `/stats.json`: `hits` is a counter that only grows, `recent` the
+last 48 blocks (16 on the boards without PSRAM). The page counts only the difference
+since its last poll, so nothing is double-counted and a reboot (the counter going
+backwards) clears the tally instead of freezing the card.
+
+The engine panel beside it is the honesty check — every figure there should read zero.
+Loss is split by cause: **upstream silent** (the resolver did not answer in 1.5 s, which
+includes a malformed query it was right to ignore) and **shed under load** (this device's
+own pending table was full). Only the second one means the box ran out of room.
+
+`node tools/test_page.js` runs that card's logic against a stubbed DOM — reboots, a tab
+left open across thousands of hostnames, ties broken by recency — and runs in CI.
+
 **4 MB flash tradeoff:** firmware OTA needs *two* app slots, which leaves ~1.3 MB for the
 blocklist (**~250k domains max**). The aggressive 537k "ultimate" list only fits the
 single-app partition table (no firmware OTA). Pick your tradeoff in `partitions.csv`.

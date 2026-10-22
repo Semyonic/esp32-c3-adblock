@@ -150,9 +150,13 @@ box inside TLS, with no plaintext fallback while the link was up.
 
 | env | chip | builds | RAM | hardware run |
 |---|---|---|---|---|
-| s3 | ESP32-S3 | yes | 39.3% | yes — everything above |
-| c3 | ESP32-C3 | yes | 27.0% | code path only, see below |
-| esp32dev | ESP32 | yes | 30.3% | code path only, see below |
+| s3 | ESP32-S3 | yes | 40.1% RAM, 93.7% flash | yes — everything above |
+| c3 | ESP32-C3 | yes | 27.3% RAM, 94.8% flash | code path only, see below |
+| esp32dev | ESP32 | yes | 30.6% RAM, 92.2% flash | code path only, see below |
+
+Asked on 2026-10-22 whether to plug a C3 or a classic ESP32 in, the owner's
+answer was not now, so those two rows stay as they are: built in CI, exercised
+through the S3, never run on their own silicon. Nothing here claims otherwise.
 
 The C3 and classic ESP32 boards were not available. What was done instead: the
 S3 was flashed with `BOARD_HAS_PSRAM` undefined and the single-core branch
