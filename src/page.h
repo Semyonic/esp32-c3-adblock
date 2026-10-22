@@ -119,6 +119,16 @@ footer{color:#64748b;font-size:11px;text-align:center;margin-top:34px}
   <button style=margin-top:10px onclick="if(confirm('Kayıtlı WiFi silinip kurulum portalına dönülecek. Emin misin?'))forgetWifi()">📡 WiFi unut</button>
  </div></div>
 </div>
+<h2>🩺 Motor sağlığı</h2>
+<div class="glass hpad">
+ <div class=hx id=hx></div>
+ <div class=note id=hxnote></div>
+</div>
+<h2>🩺 Motor sağlığı</h2>
+<div class="glass hpad">
+ <div class=hx id=hx></div>
+ <div class=note id=hxnote></div>
+</div>
 <footer>C3 AdBlock · <span id=demo></span>3 sn'de bir yenilenir</footer>
 </div><script>
 const H={'X-Requested-With':'c3-adblock'}
@@ -128,7 +138,23 @@ let prev=null
 function togglePause(){fetch(stpill.className=='pill off'?'/resume':'/pause?s='+pausedur.value,{headers:H}).then(load)}
 async function load(){let s;try{s=await(await fetch('/stats.json')).json()}catch(e){demo.textContent='demo — ';render(demodata());return}
 render(s)}
-function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,chits:331204,dot:true,dotq:180893,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
+function demodata(){return{ip:'192.168.1.64',blocked:128431,allowed:512097,domains:198879,rssi:-52,temp:41.5,heap:135168,uptime:'3g 4s 12d',blocking:true,resumeIn:0,chits:331204,dot:true,dotq:180893,lost:0,txfailreply:0,txfailquery:0,txerrreply:0,txerrquery:0,dotdrop:0,doths:3,dothsms:1542,psram:5161372,upurl:'https://github.com/…/blocklist.bin',upiv:24,upstat:'ok: 198.879 domain',clients:[{ip:'192.168.1.10',mac:'a4:83:e7:11:22:33',blocked:2877,allowed:61203,banned:false,name:'semih-desktop',src:'man'},{ip:'192.168.1.23',mac:'f0:18:98:44:55:66',blocked:4102,allowed:38921,banned:false,name:'MacBook-Pro-Semih',src:'mdns'},{ip:'192.168.1.77',mac:'3c:5a:b4:77:88:99',blocked:9431,allowed:2105,banned:false,name:'Samsung TV Oda',src:'man'},{ip:'192.168.1.42',mac:'9e:31:f0:aa:bb:cc',blocked:1288,allowed:12044,banned:false,name:'iphone-ayse',src:'mdns'},{ip:'192.168.1.94',mac:'32:11:8e:dd:ee:ff',blocked:551,allowed:8443,banned:true,name:'Guest-Android',src:'man'}],custom:['ads.example.com','tracker.evil.io','telemetry.vendor.net'],defcreds:false}}
+// The counters that say whether the DNS engine itself is dropping anything.
+// Every one of these should stay at zero; when one climbs, it names the stage.
+function health(s){
+ const err=c=>c==1?'tampon yok':c?'lwIP '+c:'',
+  rows=[['Cevapsız kalan',s.lost,'upstream 1,5 sn içinde yanıtlamadı'],
+        ['Gönderilemeyen cevap',s.txfailreply,err(s.txerrreply)||'istemciye yanıt çıkmadı'],
+        ['Gönderilemeyen sorgu',s.txfailquery,err(s.txerrquery)||'sorgu upstream tarafına çıkmadı'],
+        ['Düşen TLS yanıtı',s.dotdrop,'teslim yuvası doluydu'],
+        ['TLS el sıkışma',s.doths,(s.dothsms||0)+' ms sürdü'],
+        ['Boş PSRAM',s.psram===undefined?undefined:Math.round(s.psram/1048576)+' MB','liste + önbellek buradan']]
+ hx.innerHTML=rows.filter(r=>r[1]!==undefined).map(([k,v,sub])=>
+  `<div><div class=lab>${k}</div><div class="n ${typeof v=='number'&&v>0&&k[0]!='T'?'bad':'ok'}">${typeof v=='number'?fmt(v):v}</div><div class=note style=margin-top:2px>${esc(sub)}</div></div>`).join('')
+ const bad=[['cevapsız',s.lost],['gönderilemeyen',(s.txfailreply||0)+(s.txfailquery||0)],['düşen',s.dotdrop]].filter(x=>x[1]>0)
+ hxnote.textContent=bad.length?'⚠ '+bad.map(x=>x[1]+' '+x[0]).join(', ')+' — tools/dnscheck.py ve dnsbench.py ile bak.'
+                             :'✓ Motor hiçbir sorguyu düşürmedi.'
+}
 function render(s){
 host.textContent='adblocker.local · '+s.ip+' · '+(s.uptime||'')
 document.getElementById('warn').style.display=s.defcreds?'block':'none';
@@ -146,6 +172,7 @@ if(prev){let dt=(Date.now()-prev.t)/1000,r=(s.blocked-prev.b)/dt;rate.textConten
 prev={b:s.blocked,t:Date.now()}
 kD.textContent=fmt(s.domains);kR.textContent=s.rssi+' dBm';kT.textContent=s.temp+' °C';kH.textContent=Math.round(s.heap/1024)+' KB';kU.textContent=s.uptime
 kC.textContent=s.allowed?Math.round(s.chits/s.allowed*100)+'%':'—';kCn.textContent=fmt(s.chits||0)+' yanıt bellekten'
+health(s)
 kE.textContent=s.dot?'açık':'kapalı';kE.style.color=s.dot?'#34d399':'#fbbf24'
 kEn.textContent=s.dot?fmt(s.dotq||0)+' sorgu TLS ile':'sorgular şifresiz gidiyor'
 cnum.textContent=s.clients.length
