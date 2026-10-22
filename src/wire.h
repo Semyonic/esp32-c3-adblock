@@ -118,7 +118,8 @@ inline int buildQuery(const char* name, uint8_t* out, int cap, uint16_t id) {
 
 // The first A record in the answer section. rcode and tc come from the header;
 // false means no A (NXDOMAIN, NODATA, truncated or malformed). The address is
-// packed as it appears on the wire, which is what IPAddress(uint32_t) expects.
+// packed the way IPAddress(uint32_t) reads it (first octet in the low byte, the
+// same convention as ip4_addr_get_u32), not as a network-order integer.
 inline bool firstA(const uint8_t* p, int len, uint32_t* ip, uint8_t* rcode, bool* tc) {
   if (len < 12) return false;
   if (rcode) *rcode = p[3] & 0x0F;
@@ -138,8 +139,8 @@ inline bool firstA(const uint8_t* p, int len, uint32_t* ip, uint8_t* rcode, bool
     uint16_t rdlen = p[i + 8] << 8 | p[i + 9];
     if (i + 10 + rdlen > len) return false;
     if (type == 1 && rdlen == 4) {
-      if (ip) *ip = (uint32_t)p[i + 10] << 24 | (uint32_t)p[i + 11] << 16 |
-                    (uint32_t)p[i + 12] << 8 | p[i + 13];
+      if (ip) *ip = (uint32_t)p[i + 10] | (uint32_t)p[i + 11] << 8 |
+                    (uint32_t)p[i + 12] << 16 | (uint32_t)p[i + 13] << 24;
       return true;
     }
     i += 10 + rdlen;

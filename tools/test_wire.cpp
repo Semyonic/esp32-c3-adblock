@@ -171,7 +171,7 @@ static void test_first_a() {
   puts("firstA");
   uint32_t ip = 0; uint8_t rc = 0; bool tc = true;
   auto p = reply(300, 1);
-  check(wire::firstA(p.data(), (int)p.size(), &ip, &rc, &tc) && ip == 0x0A000001 && rc == 0 && !tc,
+  check(wire::firstA(p.data(), (int)p.size(), &ip, &rc, &tc) && ip == 0x0100000A && rc == 0 && !tc,
         "finds the A record, address and rcode");
 
   auto nx = query("example.com");
@@ -184,7 +184,7 @@ static void test_first_a() {
   cn.insert(cn.end(), cname, cname + sizeof(cname));
   uint8_t arec[] = {0xC0,0x0C, 0,1, 0,1, 0,0,0,60, 0,4, 93,184,216,34};
   cn.insert(cn.end(), arec, arec + sizeof(arec));
-  check(wire::firstA(cn.data(), (int)cn.size(), &ip, &rc, &tc) && ip == 0x5DB8D822,
+  check(wire::firstA(cn.data(), (int)cn.size(), &ip, &rc, &tc) && ip == 0x22D8B85D,
         "skips a CNAME and returns the A that follows");
 
   auto bad = reply(300, 1);
