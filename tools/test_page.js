@@ -41,8 +41,12 @@ eval(src + ';global.__cnt=()=>cnt;global.__last=()=>last');
 
 let failed = 0;
 const ok = (cond, what) => { console.log((cond ? '  PASS  ' : '  FAIL  ') + what); if (!cond) failed++; };
-const feed = (hits, names) =>
-  trackers({ hits, recent: names.map(n => ({ n, c: '192.168.1.7', s: 1 })) });
+// `s` is the age in seconds the device reports for a block. Freshness has to
+// come from that, not from how fast this loop happens to run, or the tie-break
+// below would depend on the wall clock and fail whenever a batch lands inside
+// one millisecond.
+const feed = (hits, names, s = 1) =>
+  trackers({ hits, recent: names.map(n => ({ n, c: '192.168.1.7', s })) });
 
 // --- an ordinary run
 feed(3, ['doubleclick.net', 'criteo.com', 'doubleclick.net']);
@@ -57,13 +61,13 @@ ok(!/doubleclick/.test(tags.innerHTML), "drops the previous run's counts");
 ok(tags.innerHTML !== beforeReboot, 'the card does not freeze');
 
 // --- a tab left open across thousands of distinct hostnames
-for (let i = 0; i < 4000; i++) feed(3 + i, ['h' + i + '.example.com']);
+for (let i = 0; i < 4000; i++) feed(3 + i, ['h' + i + '.example.com'], 30);
 const keys = Object.keys(global.__cnt()).length;
 ok(keys <= 96, 'state stays bounded: ' + keys + ' hostnames held after 4000 distinct ones');
 ok(Object.keys(global.__last()).length === keys, 'the freshness table holds the same keys');
 
 // --- a fresh block outranks equally-counted older ones
-feed(4100, ['criteo.com']);
+feed(4100, ['criteo.com'], 0);
 ok(/criteo\.com/.test(tags.innerHTML), 'a new block is drawn even when every count ties');
 
 // --- the whole page, against the demo data it ships with
