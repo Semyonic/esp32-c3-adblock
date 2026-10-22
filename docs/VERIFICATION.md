@@ -146,6 +146,22 @@ plaintext path meanwhile.
 Encryption was checked by counting: 25 of 25 and 20 of 20 cache misses left the
 box inside TLS, with no plaintext fallback while the link was up.
 
+## Censorship diagnostic
+
+`/diag` was run against the deployed S3 on 2026-10-22. Each row is one test; the
+verdict names the layer that refused the name.
+
+| domain | ISP DNS | DoT | TCP 443 | TLS SNI | verdict |
+|---|---|---|---|---|---|
+| discord.com | 195.175.254.2 | 162.159.128.233 | open, 58 ms | failed after 6074 ms | dns+sni |
+| example.com | 104.20.23.154 | 172.66.147.243 | open, 59 ms | ok, 709 ms | dns |
+
+The first is the known two-layer Discord block: the ISP resolver returns its block
+page, DoT gets the real Cloudflare address, and the TLS handshake is dropped after
+the ClientHello. The second is a CDN difference only: the two resolvers returned
+different Cloudflare edges and TLS completed, so the card says DNS differs but does
+not call it a block.
+
 ## Targets
 
 | env | chip | builds | RAM | hardware run |

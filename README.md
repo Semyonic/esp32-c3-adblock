@@ -180,6 +180,13 @@ own pending table was full). Only the second one means the box ran out of room.
 `node tools/test_page.js` runs that card's logic against a stubbed DOM — reboots, a tab
 left open across thousands of hostnames, ties broken by recency — and runs in CI.
 
+The **censorship card** answers a different question: which layer refuses a name? It
+compares the LAN resolver's answer with a DoT answer, then opens TCP 443 and a TLS
+handshake with the name as SNI. It reports DNS, IP or SNI/DPI, and when both DNS and SNI
+are in play it says so: Discord, measured here, gets a poisoned 195.175.254.2 from the
+ISP resolver while DoT returns Cloudflare, TCP 443 opens, and the TLS handshake dies.
+One test runs at a time; a second click is told the box is busy.
+
 **4 MB flash tradeoff:** firmware OTA needs *two* app slots, which leaves ~1.3 MB for the
 blocklist (**~250k domains max**). The aggressive 537k "ultimate" list only fits the
 single-app partition table (no firmware OTA). Pick your tradeoff in `partitions.csv`.
@@ -284,6 +291,7 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
 ## Done / how it could grow
 
 - ✅ Web dashboard — per-client block/allow counts, ban a client, add custom domains
+- ✅ Censorship diagnostic — LAN resolver vs DoT, TCP 443 and TLS SNI, one test at a time
 - ✅ mDNS (`c3adblock.local`) for discovery
 - ✅ OTA — firmware + blocklist update over WiFi, plus scheduled remote blocklist pulls
 - ✅ Captive-portal WiFi setup (no hardcoded creds) + one-click browser web-installer
