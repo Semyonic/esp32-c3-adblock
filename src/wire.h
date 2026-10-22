@@ -148,6 +148,93 @@ inline bool firstA(const uint8_t* p, int len, uint32_t* ip, uint8_t* rcode, bool
   return false;
 }
 
+// The SNI host name inside a TLS ClientHello. A TCP segment can stop in the
+// middle of the hello, so the parser works with the bytes it has and still
+// finds an extension that is complete. Returns false when there is no
+// ClientHello, no SNI extension, or the extension is cut.
+inline bool findSni(const uint8_t* p, int len, int* off, int* nameLen) {
+  if (!p || len < 9 || p[0] != 0x16) return false;
+  int recLen = (p[3] << 8) | p[4];
+  int end = 5 + recLen;
+  if (recLen <= 0 || end > len) end = len;        // partial record: use what arrived
+  int i = 5;
+  if (i + 4 > end || p[i] != 0x01) return false;
+  int hsLen = ((int)p[i + 1] << 16) | (p[i + 2] << 8) | p[i + 3];
+  int hsEnd = i + 4 + hsLen;
+  if (hsEnd > end) hsEnd = end;
+  i += 4;
+  if (i + 34 > hsEnd) return false;               // version + random
+  i += 34;
+  int sid = p[i++];
+  if (sid > 32 || i + sid > hsEnd) return false;
+  i += sid;
+  if (i + 2 > hsEnd) return false;
+  int cs = (p[i] << 8) | p[i + 1];
+  i += 2;
+  if (i + cs > hsEnd) return false;
+  i += cs;
+  if (i + 1 > hsEnd) return false;
+  int comp = p[i++];
+  if (i + comp > hsEnd) return false;
+  i += comp;
+  if (i + 2 > hsEnd) return false;
+  int extLen = (p[i] << 8) | p[i + 1];
+  i += 2;
+  int extEnd = i + extLen;
+  if (extEnd > hsEnd) extEnd = hsEnd;
+  while (i + 4 <= extEnd) {
+    int type = (p[i] << 8) | p[i + 1];
+    int elen = (p[i + 2] << 8) | p[i + 3];
+    i += 4;
+    if (i + elen > extEnd) return false;
+    if (type == 0x0000) {
+      if (elen < 5) return false;
+      int listLen = (p[i] << 8) | p[i + 1];
+      if (listLen + 2 > elen) return false;
+      int j = i + 2;
+      if (p[j++] != 0) return false;              // host_name type
+      int nl = (p[j] << 8) | p[j + 1];
+      j += 2;
+      if (nl < 1 || j + nl > i + elen) return false;
+      *off = j;
+      *nameLen = nl;
+      return true;
+    }
+    i += elen;
+  }
+  return false;
+}
+
+// Copy a ClientHello and replace its SNI with `decoy`, repeated or cut to the
+// same length so every length field stays valid. The fake is only ever read by
+// a middlebox; the server never sees it (TTL 3).
+inline bool fakeHello(const uint8_t* real, int len, uint8_t* out, const char* decoy) {
+  int off = 0, n = 0;
+  if (!real || !out || !decoy || !findSni(real, len, &off, &n)) return false;
+  int d = (int)strlen(decoy);
+  if (d < 1) return false;
+  memcpy(out, real, (size_t)len);
+  for (int i = 0; i < n; i++) out[off + i] = (uint8_t)decoy[i % d];
+  return true;
+}
+
+// TCP checksum over a header and payload, with the IPv4 pseudo-header. The
+// addresses are the four octets in wire order; the result is stored at offset
+// 16 as a big-endian value.
+inline uint16_t tcpChecksum(const uint8_t* seg, int len, const uint8_t src[4], const uint8_t dst[4]) {
+  uint32_t sum = 0;
+  sum += (uint16_t)((src[0] << 8) | src[1]);
+  sum += (uint16_t)((src[2] << 8) | src[3]);
+  sum += (uint16_t)((dst[0] << 8) | dst[1]);
+  sum += (uint16_t)((dst[2] << 8) | dst[3]);
+  sum += 6;                                       // TCP
+  sum += (uint16_t)len;
+  for (int i = 0; i + 1 < len; i += 2) sum += (uint16_t)((seg[i] << 8) | seg[i + 1]);
+  if (len & 1) sum += (uint16_t)(seg[len - 1] << 8);
+  while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+  return (uint16_t)~sum;
+}
+
 // Walk a name and each of its parents down to "a.b", calling listed() on the hash
 // of each. "www." is stripped first, matching how the lists are built.
 template <typename Listed>

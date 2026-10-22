@@ -271,7 +271,7 @@ if(prev){
  brand.textContent=nm;foot.textContent=nm;document.title=nm}
 prev={b:s.blocked,t:Date.now()}
 kD.textContent=fmt(s.domains);kR.textContent=s.rssi+' dBm';kT.textContent=s.temp+' °C';kH.textContent=Math.round(s.heap/1024)+' KB';kU.textContent=s.uptime
-pxs.textContent=(s.pxactive||0)+' açık · '+(s.pxtotal||0)+' toplam · '+(s.pxfail||0)+' hata · '+fmt(s.pxbytes||0)+' bayt'
+pxs.textContent=(s.pxactive||0)+' açık · '+(s.pxtotal||0)+' toplam · '+(s.pxfail||0)+' hata · '+fmt(s.pxbytes||0)+' bayt · fake '+(s.pxfake||0)+' · son hata '+(s.pxlast||0)
 pacurl.textContent='http://'+s.ip+'/proxy.pac';pacurl.href='http://'+s.ip+'/proxy.pac'
 kC.textContent=s.allowed?Math.round(s.chits/s.allowed*100)+'%':'—';kCn.textContent=fmt(s.chits||0)+' yanıt bellekten'
 health(s);trackers(s)

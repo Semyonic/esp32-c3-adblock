@@ -164,13 +164,22 @@ not call it a block.
 
 ## CONNECT proxy
 
-`curl -x http://192.168.1.240:8080 -I https://discord.com` reached the proxy,
-got `200 Connection Established`, resolved discord.com over DoT, opened TCP 443,
-and split the 321-byte ClientHello into 14 segments. The TLS handshake still
-died with `SSL_ERROR_SYSCALL`: this line's DPI reassembles the segments and
-resets, so the split alone is not enough here. The Windows zapret profile on the
-same line uses `fake,split2`; the fake SNI is the next piece. The proxy counters
-show the split and the bytes sent before the reset.
+The proxy is verified end to end on names the DPI allows: `curl -x
+http://192.168.1.240:8080 -I https://example.com` and `https://www.google.com`
+returned `HTTP/2 200` through the box, so the DoT resolve, TCP path, checksum,
+fake and split are sound.
+
+Discord is the blocked case. With split only the request times out (`http=000`);
+with fake plus split it returns `HTTP/2 200` (cf-ray AMS, 6725 bytes relayed).
+The fake is a synthetic 75-byte ClientHello for www.google.com sent at the real
+snd_nxt with TTL 8. Its length differs from the real hello on purpose: a
+same-length copy is a clean TCP duplicate and a reassembling DPI keeps the real
+bytes, while the short fake leaves the allowed name in the part the DPI keeps.
+TTL 8 reaches the DPI but dies before the server; the server only sees the real
+ClientHello. The switches are live at `/px?fake=1&split=1&ttl=8`; the counters
+`pxfake`, `pxsplit` and `pxttl` show what the next connection used. curl reports
+56 on a GET after the 200 because the proxy closes the client once the server
+closes; the response itself is complete.
 
 ## Targets
 

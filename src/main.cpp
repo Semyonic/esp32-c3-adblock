@@ -310,7 +310,8 @@ static void handleStats() {
              ",\"resumeIn\":" + (uint32_t)(!blockingOn && resumeAt ? (resumeAt - millis()) / 1000 : 0) +
              ",\"defcreds\":" + ((strcmp(WEB_PASS, "CHANGE_ME_WEB_PASSWORD") == 0 || strcmp(OTA_PASS, "CHANGE_ME_OTA_PASSWORD") == 0) ? "true" : "false") +
              ",\"pxtotal\":" + String((unsigned long)px.total) + ",\"pxactive\":" + String((unsigned long)px.active) +
-             ",\"pxfail\":" + String((unsigned long)px.failed) + ",\"pxsplit\":" + String((unsigned long)px.splits) +
+             ",\"pxlast\":" + String(px.lastErr) +
+             ",\"pxfail\":" + String((unsigned long)px.failed) + ",\"pxsplit\":" + String((unsigned long)px.splits) + ",\"pxfake\":" + String((unsigned long)px.fakes) + ",\"pxfakeon\":" + (pxFakeOn ? "1" : "0") + ",\"pxspliton\":" + (pxSplitOn ? "1" : "0") + ",\"pxttl\":" + String((int)pxFakeTtl) +
              ",\"pxbytes\":" + String((unsigned long)px.bytes) +
              ",\"hits\":" + dnsHitSeq() +      // monotonic: lets the page tell new blocks from ones it has already drawn
              ",\"recent\":[";
@@ -726,6 +727,14 @@ void setup() {
   web.on("/diag", handleDiagStart);
   web.on("/diag.json", handleDiagJson);
   web.on("/proxy.pac", handlePac);
+  web.on("/px", []() {                        // /px?fake=0|1&split=0|1&ttl=1..64
+    if (web.hasArg("fake")) pxFakeOn = web.arg("fake") != "0";
+    if (web.hasArg("split")) pxSplitOn = web.arg("split") != "0";
+    if (web.hasArg("ttl")) { int v = web.arg("ttl").toInt(); if (v >= 1 && v <= 64) pxFakeTtl = (uint8_t)v; }
+    String j = String("{\"fake\":") + (pxFakeOn ? "1" : "0") + ",\"split\":" + (pxSplitOn ? "1" : "0") +
+               ",\"ttl\":" + String((int)pxFakeTtl) + "}";
+    web.send(200, "application/json", j);
+  });
   web.on("/ban", handleBan);
   web.on("/label", []() {                    // /label?mac=aa:bb:..&n=name (n empty = clear)
     if (!requireAuth()) return;

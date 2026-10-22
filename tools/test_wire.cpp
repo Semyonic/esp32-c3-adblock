@@ -193,6 +193,69 @@ static void test_first_a() {
   check(!wire::firstA(p.data(), 11, &ip, &rc, &tc), "refuses a packet too short for a header");
 }
 
+// A minimal TLS 1.3 ClientHello with one SNI extension, enough to exercise the
+// parser without a live handshake.
+static std::vector<uint8_t> clientHello(const char* name) {
+  size_t n = strlen(name);
+  size_t hsLen = 52 + n;
+  size_t recLen = 4 + hsLen;
+  std::vector<uint8_t> h;
+  h.push_back(0x16); h.push_back(0x03); h.push_back(0x01);
+  h.push_back((uint8_t)(recLen >> 8)); h.push_back((uint8_t)recLen);
+  h.push_back(0x01);
+  h.push_back((uint8_t)(hsLen >> 16)); h.push_back((uint8_t)(hsLen >> 8)); h.push_back((uint8_t)hsLen);
+  h.push_back(0x03); h.push_back(0x03);
+  for (int i = 0; i < 32; i++) h.push_back((uint8_t)i);
+  h.push_back(0);
+  h.push_back(0); h.push_back(2); h.push_back(0x13); h.push_back(0x01);
+  h.push_back(1); h.push_back(0);
+  size_t extLen = 5 + n;
+  size_t extBlock = 4 + extLen;
+  h.push_back((uint8_t)(extBlock >> 8)); h.push_back((uint8_t)extBlock);
+  h.push_back(0); h.push_back(0);
+  h.push_back((uint8_t)(extLen >> 8)); h.push_back((uint8_t)extLen);
+  h.push_back((uint8_t)((3 + n) >> 8)); h.push_back((uint8_t)(3 + n));
+  h.push_back(0);
+  h.push_back((uint8_t)(n >> 8)); h.push_back((uint8_t)n);
+  for (size_t i = 0; i < n; i++) h.push_back((uint8_t)name[i]);
+  return h;
+}
+
+static void test_tcp_checksum() {
+  puts("tcpChecksum");
+  uint8_t seg[25] = {0x30,0x39, 0x01,0xbb, 0,0,0,1, 0,0,0,0, 0x50,0x18, 0xff,0xff, 0,0, 0,0,
+                     'h','e','l','l','o'};
+  uint8_t s[4] = {192,168,1,2}, d[4] = {93,184,216,34};
+  uint16_t ck = wire::tcpChecksum(seg, sizeof(seg), s, d);
+  check(ck != 0, "computes a checksum");
+  seg[16] = (uint8_t)(ck >> 8); seg[17] = (uint8_t)ck;
+  check(wire::tcpChecksum(seg, sizeof(seg), s, d) == 0, "the checksum verifies to zero");
+}
+
+static void test_find_sni() {
+  puts("findSni / fakeHello");
+  auto h = clientHello("discord.com");
+  int off = 0, n = 0;
+  check(wire::findSni(h.data(), (int)h.size(), &off, &n) && off == 61 && n == 11 &&
+        memcmp(h.data() + off, "discord.com", 11) == 0, "finds the SNI in a ClientHello");
+  uint8_t out[600];
+  check(wire::fakeHello(h.data(), (int)h.size(), out, "example.com") &&
+        memcmp(out + off, "example.com", 11) == 0 &&
+        memcmp(out, h.data(), 61) == 0 &&
+        memcmp(out + off + 11, h.data() + off + 11, h.size() - (size_t)(off + 11)) == 0,
+        "replaces the name and leaves every other byte alone");
+  check(wire::fakeHello(h.data(), (int)h.size(), out, "a") &&
+        memcmp(out + off, "aaaaaaaaaaa", 11) == 0, "pads a short decoy to the same length");
+  auto no = clientHello("discord.com");
+  no[0] = 0x15;
+  check(!wire::findSni(no.data(), (int)no.size(), &off, &n), "rejects a non-handshake record");
+  auto ext = clientHello("discord.com");
+  ext[50] = 0; ext[51] = 0;
+  check(!wire::findSni(ext.data(), (int)ext.size(), &off, &n), "a hello without extensions has no SNI");
+  check(!wire::findSni(h.data(), 61 + 5, &off, &n), "a cut name is not enough");
+  check(!wire::fakeHello(h.data(), 61 + 5, out, "example.com"), "fakeHello says no when the SNI is cut");
+}
+
 static void test_name_blocked() {
   puts("nameBlocked");
   const char* listed[] = {"ads.example", "tracker.io"};
@@ -284,6 +347,8 @@ static void test_fuzz() {
   auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return (seed >> 16) & 0xFFFF; };
   char name[256]; uint16_t qt, qc; int qend; uint32_t ttl; uint64_t h;
   uint32_t ip; uint8_t rc; bool tc; uint8_t q[512];
+  int snioff = 0, snilen = 0; uint8_t fake[600];
+  uint8_t cs[4] = {192,168,1,2}, cd[4] = {93,184,216,34};
   for (int iter = 0; iter < 200000; iter++) {
     int len = 1 + (int)(rnd() % 600);
     std::vector<uint8_t> p((size_t)len);
@@ -296,6 +361,9 @@ static void test_fuzz() {
     wire::walkTtl(p.data(), len, rnd() % 1000, &ttl);
     wire::buildQuery(name, q, sizeof(q), (uint16_t)rnd());
     wire::firstA(p.data(), len, &ip, &rc, &tc);
+    wire::findSni(p.data(), len, &snioff, &snilen);
+    wire::fakeHello(p.data(), len, fake, "example.com");
+    wire::tcpChecksum(p.data(), len, cs, cd);
     wire::skipName(p.data(), len, (int)(rnd() % (unsigned)len));
     wire::contains(p.data(), (uint32_t)(len / 5), ((uint64_t)rnd() << 16) | rnd());
 
@@ -318,6 +386,8 @@ int main() {
   test_walk_ttl();
   test_build_query();
   test_first_a();
+  test_find_sni();
+  test_tcp_checksum();
   test_name_blocked();
   test_parse_list_line();
   test_contains();

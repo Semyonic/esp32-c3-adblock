@@ -189,10 +189,15 @@ One test runs at a time; a second click is told the box is busy.
 
 The **proxy card** is the other half: `/proxy.pac` sends only the names in
 `src/proxy.cpp`'s list through an HTTP CONNECT proxy on :8080. The proxy resolves
-the name over DoT, opens a plain TCP connection, and splits the first TLS
-ClientHello into 14 segments; TLS is relayed end to end, so there is no
-certificate to install. A browser or OS that takes the PAC URL needs no other
-configuration.
+the name over DoT, opens a plain TCP connection, sends a synthetic 75-byte
+ClientHello for www.google.com with TTL 8, then splits the real ClientHello into
+14 segments. The fake is deliberately shorter than the real hello: a same-length
+copy is a clean TCP duplicate and a reassembling DPI keeps the real bytes, while
+the short fake leaves the allowed name in the part the DPI keeps. TTL 8 reaches
+the ISP's DPI but dies before the server, so the server only sees the real
+ClientHello. TLS is relayed end to end, so there is no certificate to install. A
+browser or OS that takes the PAC URL needs no other configuration. The switches
+are live: `/px?fake=1&split=1&ttl=8` sets them and returns the current values.
 
 **4 MB flash tradeoff:** firmware OTA needs *two* app slots, which leaves ~1.3 MB for the
 blocklist (**~250k domains max**). The aggressive 537k "ultimate" list only fits the
@@ -299,7 +304,7 @@ dig @<c3-ip> github.com        # -> real IP  (forwarded)
 
 - ✅ Web dashboard — per-client block/allow counts, ban a client, add custom domains
 - ✅ Censorship diagnostic — LAN resolver vs DoT, TCP 443 and TLS SNI, one test at a time
-- ✅ CONNECT proxy with PAC — DoT resolve, ClientHello split, no TLS termination
+- ✅ CONNECT proxy with PAC — DoT resolve, fake SNI (TTL 8), ClientHello split, no TLS termination
 - ✅ mDNS (`c3adblock.local`) for discovery
 - ✅ OTA — firmware + blocklist update over WiFi, plus scheduled remote blocklist pulls
 - ✅ Captive-portal WiFi setup (no hardcoded creds) + one-click browser web-installer
