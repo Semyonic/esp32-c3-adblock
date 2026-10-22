@@ -49,16 +49,19 @@ From a fresh boot, then 180 s of mixed load:
 The counter is split by direction because the two cases differ: a refused query
 is resent 350 ms later, a refused reply is not.
 
-About that single refused reply — what is measured is that it happens at most
-once, shortly after a boot, and never again under load (it stayed at exactly 1
-across the following 22,880 queries). It is also not reproducible on demand:
-two controlled attempts that hammered the device from its first answer onward
-produced 0 and 2,600 queries with no refusal at all, and another boot served
-3,320 queries in its first 40 s with every counter at zero. No client ever saw
-a loss from it. An earlier draft of this file blamed ARP resolution; that was a
-guess and is withdrawn — `sendRaw()` now prints the actual lwIP error code and
-whether the buffer allocation failed, so the next occurrence will say what it
-is instead of being attributed.
+About that single refused reply: it was seen twice, both times early in the
+session on builds that predate the queue-fallback and lookup-memo fixes, and
+once it had appeared it stayed at exactly 1 across the following 22,880 queries
+— never a load effect. On the shipping build it has not recurred. Three fresh
+boots, each loaded from the instant the device first answered, served 3,320,
+2,080 and 2,080 queries with every counter at zero and nothing in the log.
+
+So the cause is not established, and this file does not guess at one. An earlier
+draft blamed ARP resolution; that was withdrawn after testing failed to support
+it (and the reasoning was weak to begin with — the device learns a client's MAC
+from the very packet it is replying to). `sendRaw()` now prints the lwIP error
+code and whether the buffer allocation failed, so a recurrence will report what
+it is. No client ever saw a loss from it in any run.
 
 Earlier in the same session a 180 s window at 85 q/s showed the device counting
 all 15,360 queries this machine sent, with internal loss, send failures and
