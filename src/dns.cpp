@@ -391,9 +391,17 @@ static void sendRaw(udp_pcb* pcb, const uint8_t* d, int len, const ip_addr_t* to
   // Counted per direction, because the consequences differ: a query lwIP refuses
   // to forward is resent by expireTick 350 ms later, while a reply it refuses is
   // an answer the client never gets and must ask for again.
-  if (!pb) { if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++; return; }
+  if (!pb) {
+    if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++;
+    Serial.printf("[dns] no pbuf for a %d B %s\n", len, pcb == srvPcb ? "reply" : "query");
+    return;
+  }
   memcpy(pb->payload, d, len);
-  if (udp_sendto(pcb, pb, to, port) != ERR_OK) { if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++; }
+  err_t e = udp_sendto(pcb, pb, to, port);
+  if (e != ERR_OK) {
+    if (pcb == srvPcb) stTxFailReply++; else stTxFailQuery++;
+    Serial.printf("[dns] udp_sendto refused a %s: err %d\n", pcb == srvPcb ? "reply" : "query", (int)e);
+  }
   pbuf_free(pb);
 }
 
